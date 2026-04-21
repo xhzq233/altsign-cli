@@ -130,20 +130,18 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     // Step 5: 从内到外签名
     NSLog(@"[Signer] Signing binaries...");
 
-    // 递归收集 .app 及其 PlugIns 内所有 .framework / .dylib，按路径深度降序（最深的先签）
+    // 递归收集 .app 内所有 .framework / .dylib，按路径深度降序（最深的先签）
     NSMutableArray<NSString *> *signablePaths = [NSMutableArray array];
-    [self collectSignableItemsAtURL:appURL into:signablePaths];
-
-    if ([fm fileExistsAtPath:plugInsURL.path]) {
-        for (NSURL *extURL in [fm contentsOfDirectoryAtURL:plugInsURL
-                                includingPropertiesForKeys:nil options:0 error:nil]) {
-            if ([extURL.pathExtension isEqualToString:@"appex"] ||
-                [extURL.pathExtension isEqualToString:@"xctest"]) {
-                [self collectSignableItemsAtURL:extURL into:signablePaths];
-            }
+    NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:appURL
+                                  includingPropertiesForKeys:nil
+                                                     options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                errorHandler:nil];
+    for (NSURL *url in enumerator) {
+        NSString *ext = url.pathExtension;
+        if ([ext isEqualToString:@"framework"] || [ext isEqualToString:@"dylib"]) {
+            [signablePaths addObject:url.path];
         }
     }
-
     [signablePaths sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
         NSUInteger da = [a componentsSeparatedByString:@"/"].count;
         NSUInteger db = [b componentsSeparatedByString:@"/"].count;
@@ -207,21 +205,6 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
 
 #pragma mark - Helpers
 
-- (BOOL)isAppleCode:(NSURL *)url {
-    NSTask *task = [[NSTask alloc] init];
-    task.launchPath = @"/usr/bin/codesign";
-    task.arguments = @[@"-dvvv", url.path];
-    NSPipe *pipe = [NSPipe pipe];
-    task.standardOutput = pipe;
-    task.standardError = pipe;
-    [task launch];
-    [task waitUntilExit];
-    NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
-    NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    // Apple 签名的 Authority 包含 "Apple Root CA"
-    return [output containsString:@"Authority=Apple Root CA"];
-}
-
 - (NSString *)findSigningIdentity:(NSURL *)keychainURL {
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/usr/bin/security";
@@ -247,24 +230,6 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     [task launch];
     [task waitUntilExit];
     return task.terminationStatus;
-}
-
-- (void)collectSignableItemsAtURL:(NSURL *)directory into:(NSMutableArray<NSString *> *)items
-{
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSURL *fwDir = [directory URLByAppendingPathComponent:@"Frameworks"];
-    if (![fm fileExistsAtPath:fwDir.path]) return;
-
-    for (NSURL *url in [fm contentsOfDirectoryAtURL:fwDir
-                            includingPropertiesForKeys:nil options:0 error:nil]) {
-        NSString *ext = url.pathExtension;
-        if ([ext isEqualToString:@"framework"]) {
-            [self collectSignableItemsAtURL:url into:items];
-            [items addObject:url.path];
-        } else if ([ext isEqualToString:@"dylib"]) {
-            [items addObject:url.path];
-        }
-    }
 }
 
 #pragma mark - Prepare App

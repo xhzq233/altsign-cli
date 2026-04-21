@@ -127,10 +127,36 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     }
     NSLog(@"[Signer] Identity: %@", identity);
 
-    // Step 5: 从内到外签名——先签嵌套的非 Apple 代码，再签主 app
+    // Step 5: 从内到外签名
     NSLog(@"[Signer] Signing binaries...");
 
-    // 5a: 签名 PlugIns 中的 .appex/.xctest bundle
+    // 递归收集 .app 及其 PlugIns 内所有 .framework / .dylib，按路径深度降序（最深的先签）
+    NSMutableArray<NSString *> *signablePaths = [NSMutableArray array];
+    [self collectSignableItemsAtURL:appURL into:signablePaths];
+
+    if ([fm fileExistsAtPath:plugInsURL.path]) {
+        for (NSURL *extURL in [fm contentsOfDirectoryAtURL:plugInsURL
+                                includingPropertiesForKeys:nil options:0 error:nil]) {
+            if ([extURL.pathExtension isEqualToString:@"appex"] ||
+                [extURL.pathExtension isEqualToString:@"xctest"]) {
+                [self collectSignableItemsAtURL:extURL into:signablePaths];
+            }
+        }
+    }
+
+    [signablePaths sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSUInteger da = [a componentsSeparatedByString:@"/"].count;
+        NSUInteger db = [b componentsSeparatedByString:@"/"].count;
+        return (da > db) ? NSOrderedAscending : ((da < db) ? NSOrderedDescending : NSOrderedSame);
+    }];
+
+    for (NSString *itemPath in signablePaths) {
+        [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
+            @"--keychain", keychainURL.path, @"--generate-entitlement-der", itemPath]];
+        NSLog(@"[Signer] Signed: %@", [itemPath lastPathComponent]);
+    }
+
+    // 签名 PlugIns 中的 .appex/.xctest bundle
     for (NSString *path in entitlementsByPath) {
         NSString *bundlePath = [path stringByDeletingLastPathComponent];
         if ([bundlePath hasSuffix:@".appex"] || [bundlePath hasSuffix:@".xctest"]) {
@@ -144,45 +170,14 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
         }
     }
 
-    // 5b: 签名 Frameworks 中所有 dylib/framework（不区分 Apple/非 Apple）
-    NSURL *frameworksURL = [appURL URLByAppendingPathComponent:@"Frameworks"];
-    if ([fm fileExistsAtPath:frameworksURL.path]) {
-        // 从内到外：先签 framework 内部的子 framework
-        for (NSURL *fwURL in [fm contentsOfDirectoryAtURL:frameworksURL
-                                includingPropertiesForKeys:nil options:0 error:nil]) {
-            NSString *ext = fwURL.pathExtension;
-            if ([ext isEqualToString:@"framework"]) {
-                // 检查 framework 内部是否有子 Frameworks
-                NSURL *subFW = [fwURL URLByAppendingPathComponent:@"Frameworks"];
-                if ([fm fileExistsAtPath:subFW.path]) {
-                    for (NSURL *subURL in [fm contentsOfDirectoryAtURL:subFW
-                                            includingPropertiesForKeys:nil options:0 error:nil]) {
-                        [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
-                            @"--keychain", keychainURL.path, @"--generate-entitlement-der", subURL.path]];
-                        NSLog(@"[Signer] Signed sub-framework: %@", [subURL lastPathComponent]);
-                    }
-                }
-                [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
-                    @"--keychain", keychainURL.path, @"--generate-entitlement-der", fwURL.path]];
-                NSLog(@"[Signer] Signed framework: %@", [fwURL lastPathComponent]);
-            } else if ([ext isEqualToString:@"dylib"]) {
-                [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
-                    @"--keychain", keychainURL.path, fwURL.path]];
-                NSLog(@"[Signer] Signed dylib: %@", [fwURL lastPathComponent]);
-            }
-        }
-    }
-
-    // 5c: 签名主 app bundle
+    // 签名主 app bundle
     NSString *mainPath = appURL.path;
     NSURL *mainEntURL = [tempDir URLByAppendingPathComponent:@"ent_main.plist"];
-    // 用第一个 entitlements（主 app 的）
     NSString *mainEnt = entitlementsByPath.allValues.firstObject;
     [mainEnt writeToURL:mainEntURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
     [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
         @"--keychain", keychainURL.path, @"--entitlements", mainEntURL.path,
         @"--generate-entitlement-der", mainPath]];
-
     NSLog(@"[Signer] Signed app bundle");
 
     // 清理 keychain
@@ -252,6 +247,24 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     [task launch];
     [task waitUntilExit];
     return task.terminationStatus;
+}
+
+- (void)collectSignableItemsAtURL:(NSURL *)directory into:(NSMutableArray<NSString *> *)items
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSURL *fwDir = [directory URLByAppendingPathComponent:@"Frameworks"];
+    if (![fm fileExistsAtPath:fwDir.path]) return;
+
+    for (NSURL *url in [fm contentsOfDirectoryAtURL:fwDir
+                            includingPropertiesForKeys:nil options:0 error:nil]) {
+        NSString *ext = url.pathExtension;
+        if ([ext isEqualToString:@"framework"]) {
+            [self collectSignableItemsAtURL:url into:items];
+            [items addObject:url.path];
+        } else if ([ext isEqualToString:@"dylib"]) {
+            [items addObject:url.path];
+        }
+    }
 }
 
 #pragma mark - Prepare App

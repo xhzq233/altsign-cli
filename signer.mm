@@ -48,6 +48,7 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     [unzipTask waitUntilExit];
 
     if (unzipTask.terminationStatus != 0) {
+        [fm removeItemAtURL:tempDir error:nil];
         completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-1
                                        userInfo:@{NSLocalizedDescriptionKey: @"Failed to extract IPA"}]);
         return;
@@ -63,6 +64,7 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
         }
     }
     if (!appURL) {
+        [fm removeItemAtURL:tempDir error:nil];
         completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-2
                                        userInfo:@{NSLocalizedDescriptionKey: @"No .app found in IPA"}]);
         return;
@@ -86,6 +88,7 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     }
 
     if (entitlementsByPath.count == 0) {
+        [fm removeItemAtURL:tempDir error:nil];
         completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-5
                                        userInfo:@{NSLocalizedDescriptionKey: @"No entitlements extracted"}]);
         return;
@@ -94,6 +97,7 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     // Step 3: 生成 P12
     NSData *p12Data = [self.certificate p12Data];
     if (!p12Data) {
+        [fm removeItemAtURL:tempDir error:nil];
         completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-3
                                        userInfo:@{NSLocalizedDescriptionKey: @"Failed to generate P12"}]);
         return;
@@ -121,6 +125,7 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     NSString *identity = [self findSigningIdentity:keychainURL];
     if (!identity) {
         [self runTask:@"/usr/bin/security" args:@[@"delete-keychain", keychainURL.path]];
+        [fm removeItemAtURL:tempDir error:nil];
         completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-6
                                        userInfo:@{NSLocalizedDescriptionKey: @"No signing identity found"}]);
         return;
@@ -149,8 +154,17 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     }];
 
     for (NSString *itemPath in signablePaths) {
-        [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
+        int status = [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
             @"--keychain", keychainURL.path, @"--generate-entitlement-der", itemPath]];
+        if (status != 0) {
+            NSLog(@"[Signer] Failed to sign: %@ (exit %d)", [itemPath lastPathComponent], status);
+            [self runTask:@"/usr/bin/security" args:@[@"delete-keychain", keychainURL.path]];
+            [fm removeItemAtURL:tempDir error:nil];
+            completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-7
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                [NSString stringWithFormat:@"Failed to sign: %@", itemPath.lastPathComponent]}]);
+            return;
+        }
         NSLog(@"[Signer] Signed: %@", [itemPath lastPathComponent]);
     }
 
@@ -161,21 +175,44 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
             NSURL *entURL = [tempDir URLByAppendingPathComponent:
                 [NSString stringWithFormat:@"ent_%@.plist", [[NSUUID UUID] UUIDString]]];
             [entitlementsByPath[path] writeToURL:entURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
+            int status = [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
                 @"--keychain", keychainURL.path, @"--entitlements", entURL.path,
                 @"--generate-entitlement-der", bundlePath]];
+            if (status != 0) {
+                NSLog(@"[Signer] Failed to sign extension: %@ (exit %d)", [bundlePath lastPathComponent], status);
+                [self runTask:@"/usr/bin/security" args:@[@"delete-keychain", keychainURL.path]];
+                [fm removeItemAtURL:tempDir error:nil];
+                completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-8
+                                               userInfo:@{NSLocalizedDescriptionKey:
+                    [NSString stringWithFormat:@"Failed to sign extension: %@", bundlePath.lastPathComponent]}]);
+                return;
+            }
             NSLog(@"[Signer] Signed nested: %@", [bundlePath lastPathComponent]);
         }
     }
 
-    // 签名主 app bundle
+    // 签名主 app bundle — 从 entitlementsByPath 中找到主 app 二进制对应的 entitlements
     NSString *mainPath = appURL.path;
+    NSDictionary *mainInfo = [NSDictionary dictionaryWithContentsOfURL:[appURL URLByAppendingPathComponent:@"Info.plist"]];
+    NSString *mainExe = mainInfo[@"CFBundleExecutable"] ?: @"";
+    NSString *mainEnt = entitlementsByPath[[mainPath stringByAppendingPathComponent:mainExe]];
+    if (!mainEnt) {
+        // fallback: 单一 profile 场景（CLI 默认流程），取唯一条目
+        mainEnt = entitlementsByPath.allValues.firstObject;
+    }
     NSURL *mainEntURL = [tempDir URLByAppendingPathComponent:@"ent_main.plist"];
-    NSString *mainEnt = entitlementsByPath.allValues.firstObject;
     [mainEnt writeToURL:mainEntURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
+    int status = [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
         @"--keychain", keychainURL.path, @"--entitlements", mainEntURL.path,
         @"--generate-entitlement-der", mainPath]];
+    if (status != 0) {
+        NSLog(@"[Signer] Failed to sign main app bundle (exit %d)", status);
+        [self runTask:@"/usr/bin/security" args:@[@"delete-keychain", keychainURL.path]];
+        [fm removeItemAtURL:tempDir error:nil];
+        completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-9
+                                       userInfo:@{NSLocalizedDescriptionKey: @"Failed to sign main app bundle"}]);
+        return;
+    }
     NSLog(@"[Signer] Signed app bundle");
 
     // 清理 keychain
@@ -212,8 +249,8 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     NSPipe *pipe = [NSPipe pipe];
     task.standardOutput = pipe;
     [task launch];
-    [task waitUntilExit];
     NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
+    [task waitUntilExit];
     NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 
     NSRegularExpression *regex = [NSRegularExpression

@@ -229,7 +229,6 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
             if (resultCode != 0) {
                 NSString *msg = responseDict[@"userString"] ?: responseDict[@"resultString"] ?: @"Unknown error";
                 NSString *desc = [NSString stringWithFormat:@"%@ (resultCode=%ld)", msg, (long)resultCode];
-                NSLog(@"[API] %@ error: %@", requestURL.lastPathComponent, desc);
                 completionHandler(nil, [NSError errorWithDomain:@"com.altsign.api" code:resultCode
                                                        userInfo:@{NSLocalizedDescriptionKey: desc}]);
                 return;

@@ -48,12 +48,14 @@ static void printUsage(void) {
         "AltSign CLI — macOS IPA 自签名工具\n"
         "\n"
         "用法:\n"
-        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <file> [--output <file>]\n"
-        "  altsign-cli cert   --apple-id <email> --password <pwd>\n"
+        "  altsign-cli sign    --apple-id <email> --password <pwd> --udid <udid> --ipa <file> [--output <file>]\n"
+        "  altsign-cli cert    --apple-id <email> --password <pwd>\n"
+        "  altsign-cli appids  --apple-id <email> --password <pwd>\n"
         "\n"
         "命令:\n"
-        "  sign    完整签名流程: 登录 → 拉证书 → 注册设备 → 创建PP → 重签IPA\n"
-        "  cert    登录后拉取开发证书列表（只读）\n"
+        "  sign     完整签名流程: 登录 → 拉证书 → 注册设备 → 创建PP → 重签IPA\n"
+        "  cert     登录后拉取开发证书列表（只读）\n"
+        "  appids   登录后拉取所有 App ID 列表（只读）\n"
         "\n"
         "选项:\n"
         "  --apple-id    Apple ID 邮箱\n"
@@ -376,6 +378,46 @@ static void performCertList(NSString *appleID, NSString *password)
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 }
 
+static void performAppIDList(NSString *appleID, NSString *password)
+{
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+    authenticateWithAppleID(appleID, password, ^(ALTAccount *account, ALTAppleAPISession *session, NSError *error) {
+        if (error || !session) {
+            NSLog(@"[Error] Authentication failed: %@", error);
+            dispatch_semaphore_signal(sem);
+            return;
+        }
+        NSLog(@"✅ Login successful! DSID: %@", account.identifier);
+
+        ALTAppleAPI *api = [ALTAppleAPI sharedAPI];
+        [api fetchTeamsForAccount:account session:session
+                completionHandler:^(NSArray<ALTTeam *> *teams, NSError *error) {
+            if (teams.count == 0) {
+                NSLog(@"No teams found");
+                dispatch_semaphore_signal(sem);
+                return;
+            }
+            ALTTeam *team = teams.firstObject;
+            NSLog(@"Team: %@ (%@)", team.name, team.identifier);
+
+            [api fetchAppIDsForTeam:team session:session
+                completionHandler:^(NSArray<ALTAppID *> *appIDs, NSError *error) {
+                if (appIDs.count > 0) {
+                    for (ALTAppID *appID in appIDs) {
+                        NSLog(@"📦 App ID: %@ (%@) name=%@", appID.bundleIdentifier, appID.identifier, appID.name);
+                    }
+                } else {
+                    NSLog(@"No App IDs found.");
+                }
+                dispatch_semaphore_signal(sem);
+            }];
+        }];
+    });
+
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+}
+
 // ============================================================
 // main
 // ============================================================
@@ -426,6 +468,9 @@ int main(int argc, const char * argv[]) {
 
         } else if ([command isEqualToString:@"cert"]) {
             performCertList(appleID, password);
+
+        } else if ([command isEqualToString:@"appids"]) {
+            performAppIDList(appleID, password);
 
         } else {
             fprintf(stderr, "Unknown command: %s\n\n", command.UTF8String);

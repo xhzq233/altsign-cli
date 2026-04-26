@@ -52,10 +52,10 @@ This runs the full pipeline: authenticate → fetch team → resolve certificate
     --output MySignedApp.ipa
 ```
 
-### List certificates
+### List certificates and App IDs
 
 ```bash
-./altsign-cli cert --apple-id you@example.com --password 'your-password'
+./altsign-cli list --apple-id you@example.com --password 'your-password'
 ```
 
 ### Two-factor authentication

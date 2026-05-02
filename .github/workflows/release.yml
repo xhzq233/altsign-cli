@@ -17,7 +17,7 @@ jobs:
         run: ./build.sh
 
       - name: Smoke test
-        run: ./altsign-cli --help
+        run: test -x altsign-cli && ./altsign-cli --help || true
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2

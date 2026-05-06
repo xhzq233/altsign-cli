@@ -168,27 +168,38 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
         NSLog(@"[Signer] Signed: %@", [itemPath lastPathComponent]);
     }
 
-    // 签名 PlugIns 中的 .appex/.xctest bundle
+    // 签名 PlugIns 中的 .appex/.xctest bundle（按路径深度降序，内层先签）
+    NSMutableArray<NSString *> *extBinaryPaths = [NSMutableArray array];
     for (NSString *path in entitlementsByPath) {
         NSString *bundlePath = [path stringByDeletingLastPathComponent];
         if ([bundlePath hasSuffix:@".appex"] || [bundlePath hasSuffix:@".xctest"]) {
-            NSURL *entURL = [tempDir URLByAppendingPathComponent:
-                [NSString stringWithFormat:@"ent_%@.plist", [[NSUUID UUID] UUIDString]]];
-            [entitlementsByPath[path] writeToURL:entURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            int status = [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
-                @"--keychain", keychainURL.path, @"--entitlements", entURL.path,
-                @"--generate-entitlement-der", bundlePath]];
-            if (status != 0) {
-                NSLog(@"[Signer] Failed to sign extension: %@ (exit %d)", [bundlePath lastPathComponent], status);
-                [self runTask:@"/usr/bin/security" args:@[@"delete-keychain", keychainURL.path]];
-                [fm removeItemAtURL:tempDir error:nil];
-                completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-8
-                                               userInfo:@{NSLocalizedDescriptionKey:
-                    [NSString stringWithFormat:@"Failed to sign extension: %@", bundlePath.lastPathComponent]}]);
-                return;
-            }
-            NSLog(@"[Signer] Signed nested: %@", [bundlePath lastPathComponent]);
+            [extBinaryPaths addObject:path];
         }
+    }
+    [extBinaryPaths sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSUInteger da = [a componentsSeparatedByString:@"/"].count;
+        NSUInteger db = [b componentsSeparatedByString:@"/"].count;
+        return (da > db) ? NSOrderedAscending : ((da < db) ? NSOrderedDescending : NSOrderedSame);
+    }];
+
+    for (NSString *path in extBinaryPaths) {
+        NSString *bundlePath = [path stringByDeletingLastPathComponent];
+        NSURL *entURL = [tempDir URLByAppendingPathComponent:
+            [NSString stringWithFormat:@"ent_%@.plist", [[NSUUID UUID] UUIDString]]];
+        [entitlementsByPath[path] writeToURL:entURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        int status = [self runTask:@"/usr/bin/codesign" args:@[@"--force", @"--sign", identity,
+            @"--keychain", keychainURL.path, @"--entitlements", entURL.path,
+            @"--generate-entitlement-der", bundlePath]];
+        if (status != 0) {
+            NSLog(@"[Signer] Failed to sign extension: %@ (exit %d)", [bundlePath lastPathComponent], status);
+            [self runTask:@"/usr/bin/security" args:@[@"delete-keychain", keychainURL.path]];
+            [fm removeItemAtURL:tempDir error:nil];
+            completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-8
+                                           userInfo:@{NSLocalizedDescriptionKey:
+                [NSString stringWithFormat:@"Failed to sign extension: %@", bundlePath.lastPathComponent]}]);
+            return;
+        }
+        NSLog(@"[Signer] Signed nested: %@", [bundlePath lastPathComponent]);
     }
 
     // 签名主 app bundle — 从 entitlementsByPath 中找到主 app 二进制对应的 entitlements
@@ -338,6 +349,17 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
         entitlementsByPath[binaryURL.path] = entString;
     } else {
         NSLog(@"[Signer] Warning: No entitlements found for %@", bundleID);
+    }
+
+    NSURL *nestedPlugInsURL = [appURL URLByAppendingPathComponent:@"PlugIns"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:nestedPlugInsURL.path]) {
+        for (NSURL *extURL in [[NSFileManager defaultManager] contentsOfDirectoryAtURL:nestedPlugInsURL
+                                includingPropertiesForKeys:nil options:0 error:nil]) {
+            if ([extURL.pathExtension isEqualToString:@"appex"] ||
+                [extURL.pathExtension isEqualToString:@"xctest"]) {
+                [self prepareAppAtURL:extURL provisioningProfiles:profiles entitlementsByPath:entitlementsByPath];
+            }
+        }
     }
 }
 

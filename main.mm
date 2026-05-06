@@ -61,7 +61,6 @@ static void printUsage(void) {
         "  --udid        iOS 设备 UDID\n"
         "  --ipa         待签名的 IPA 文件路径\n"
         "  --output      输出签名后的 IPA 路径 (默认在原文件名加 _signed)\n"
-        "  --bundle-id   自定义 Bundle ID (可选)\n"
         "  --verbose     打印完整日志（默认截断大响应）\n"
         "\n"
     );
@@ -80,7 +79,7 @@ static NSString * _Nullable getArg(NSArray *args, NSString *flag) {
     return nil;
 }
 
-static NSString * _Nullable extractBundleIDFromIPA(NSString *ipaPath) {
+static NSArray<NSString *> * _Nullable extractBundleIDsFromIPA(NSString *ipaPath) {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSURL *tempDir = [fm.temporaryDirectory URLByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
     [fm createDirectoryAtURL:tempDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -97,20 +96,30 @@ static NSString * _Nullable extractBundleIDFromIPA(NSString *ipaPath) {
     }
 
     NSURL *payloadDir = [tempDir URLByAppendingPathComponent:@"Payload"];
-    NSArray<NSURL *> *contents = [fm contentsOfDirectoryAtURL:payloadDir includingPropertiesForKeys:nil options:0 error:nil];
+    NSMutableArray<NSString *> *bundleIDs = [NSMutableArray array];
 
-    NSString *bundleID = nil;
-    for (NSURL *url in contents) {
-        if ([url.pathExtension isEqualToString:@"app"]) {
-            NSURL *infoPlistURL = [url URLByAppendingPathComponent:@"Info.plist"];
-            NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfURL:infoPlistURL];
-            bundleID = infoPlist[@"CFBundleIdentifier"];
-            break;
+    void (^collectBundleIDs)(NSURL *) = ^(NSURL *dir) {
+        NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:dir
+                                     includingPropertiesForKeys:nil
+                                                        options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                   errorHandler:nil];
+        for (NSURL *url in enumerator) {
+            NSString *ext = url.pathExtension;
+            // xctest 的 Bundle ID 会被覆盖成主 app 的，不需要单独提取；appex 保持自己的
+            if ([ext isEqualToString:@"app"] || [ext isEqualToString:@"appex"]) {
+                NSURL *infoPlistURL = [url URLByAppendingPathComponent:@"Info.plist"];
+                NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfURL:infoPlistURL];
+                NSString *bundleID = infoPlist[@"CFBundleIdentifier"];
+                if (bundleID && bundleID.length > 0) {
+                    [bundleIDs addObject:bundleID];
+                }
+            }
         }
-    }
+    };
+    collectBundleIDs(payloadDir);
 
     [fm removeItemAtURL:tempDir error:nil];
-    return bundleID;
+    return bundleIDs.count > 0 ? bundleIDs : nil;
 }
 
 // ============================================================
@@ -165,8 +174,7 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
 // ============================================================
 
 static void performSign(NSString *appleID, NSString *password,
-                        NSString *udid, NSString *ipaPath, NSString *outputPath,
-                        NSString * _Nullable customBundleID)
+                        NSString *udid, NSString *ipaPath, NSString *outputPath)
 {
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
@@ -211,19 +219,16 @@ static void performSign(NSString *appleID, NSString *password,
                     [api registerDeviceWithName:@"AltSign Device" identifier:udid team:team session:session completionHandler:^(ALTDevice *device, NSError *error) {
                         NSLog(@"[Step 4] Device registered or already exists");
 
-                        // Step 5: 确定 bundleID
-                        NSString *bundleID = customBundleID;
-                        if (!bundleID) {
-                            bundleID = extractBundleIDFromIPA(ipaPath);
-                            if (!bundleID) {
-                                NSLog(@"[Error] Failed to read bundle ID from IPA");
-                                dispatch_semaphore_signal(sem);
-                                return;
-                            }
+                        // Step 5: 提取 IPA 中所有需要签名的 bundle ID
+                        NSArray<NSString *> *bundleIDs = extractBundleIDsFromIPA(ipaPath);
+                        if (!bundleIDs || bundleIDs.count == 0) {
+                            NSLog(@"[Error] Failed to read bundle IDs from IPA");
+                            dispatch_semaphore_signal(sem);
+                            return;
                         }
+                        NSLog(@"[Step 5] Bundle IDs to resolve: %@", [bundleIDs componentsJoinedByString:@", "]);
 
-                        // Step 6: 获取已有 App ID 列表，查找或创建
-                        NSLog(@"[Step 5] Resolving App ID for %@...", bundleID);
+                        // Step 6: 获取已有 App ID 列表，然后串行创建缺失的 App ID 并下载 Profile
                         [api fetchAppIDsForTeam:team session:session completionHandler:^(NSArray<ALTAppID *> *appIDs, NSError *error) {
                             if (error) {
                                 NSLog(@"[Error] fetchAppIDs failed: %@", error);
@@ -231,58 +236,83 @@ static void performSign(NSString *appleID, NSString *password,
                                 return;
                             }
 
-                            ALTAppID *appID = nil;
-                            for (ALTAppID *aid in appIDs) {
-                                if ([aid.bundleIdentifier isEqualToString:bundleID]) { appID = aid; break; }
-                            }
+                            NSMutableArray<ALTProvisioningProfile *> *profiles = [NSMutableArray array];
+                            dispatch_queue_t serialQueue = dispatch_queue_create("com.altsign.profile", DISPATCH_QUEUE_SERIAL);
 
-                            if (!appID) {
-                                NSLog(@"[Step 5] Creating App ID: %@", bundleID);
-                            }
+                            void (^finishWithError)(NSString *) = ^(NSString *reason) {
+                                NSLog(@"[Error] %@", reason);
+                                dispatch_semaphore_signal(sem);
+                            };
 
-                            void (^afterAppID)(ALTAppID *) = ^(ALTAppID *appID) {
-                                // Step 7: 下载 Provisioning Profile
-                                NSLog(@"[Step 6] Fetching Provisioning Profile...");
-                                [api fetchProvisioningProfileForAppID:appID team:team session:session completionHandler:^(ALTProvisioningProfile *profile, NSError *error) {
-                                    if (error || !profile) {
-                                        NSLog(@"[Error] Failed to fetch profile: %@", error);
-                                        dispatch_semaphore_signal(sem);
-                                        return;
+                            void (^startSigning)(void) = ^{
+                                NSLog(@"[Step 7] Signing IPA...");
+                                ALTSigner *signer = [[ALTSigner alloc] initWithCertificate:cert];
+                                [signer signIPAAtURL:[NSURL fileURLWithPath:ipaPath]
+                                    provisioningProfiles:profiles
+                                               outputURL:[NSURL fileURLWithPath:outputPath]
+                                       completionHandler:^(BOOL success, NSError *error) {
+                                    if (success) {
+                                        NSLog(@"✅ [Done] IPA signed successfully!");
+                                        NSLog(@"   Output: %@", outputPath);
+                                    } else {
+                                        NSLog(@"❌ [Error] Signing failed: %@", error);
                                     }
-                                    NSLog(@"[Step 6] Profile acquired: %@ (expires: %@)", profile.identifier, profile.expirationDate);
-
-                                    // Step 8: 重签 IPA
-                                    NSLog(@"[Step 7] Signing IPA...");
-                                    ALTSigner *signer = [[ALTSigner alloc] initWithCertificate:cert];
-                                    signer.bundleIDOverride = customBundleID;
-                                    [signer signIPAAtURL:[NSURL fileURLWithPath:ipaPath]
-                                        provisioningProfiles:@[profile]
-                                                   outputURL:[NSURL fileURLWithPath:outputPath]
-                                           completionHandler:^(BOOL success, NSError *error) {
-                                        if (success) {
-                                            NSLog(@"✅ [Done] IPA signed successfully!");
-                                            NSLog(@"   Output: %@", outputPath);
-                                        } else {
-                                            NSLog(@"❌ [Error] Signing failed: %@", error);
-                                        }
-                                        dispatch_semaphore_signal(sem);
-                                    }];
+                                    dispatch_semaphore_signal(sem);
                                 }];
                             };
 
-                            if (appID) {
-                                NSLog(@"[Step 5] Reusing existing App ID: %@", appID.bundleIdentifier);
-                                afterAppID(appID);
-                            } else {
-                                [api addAppIDWithName:@"AltSign App" bundleIdentifier:bundleID team:team session:session completionHandler:^(ALTAppID *newAppID, NSError *error) {
-                                    if (error || !newAppID) {
-                                        NSLog(@"[Error] Failed to create App ID: %@", error);
-                                        dispatch_semaphore_signal(sem);
-                                        return;
+                            // 串行处理每个 Bundle ID 的 App ID + Profile（避免主线程死锁）
+                            NSMutableArray<NSString *> *remainingBundleIDs = [bundleIDs mutableCopy];
+                            __block void (^processNext)(void) = nil;
+                            processNext = ^{
+                                if (remainingBundleIDs.count == 0) {
+                                    if (profiles.count != bundleIDs.count) {
+                                        finishWithError(@"Failed to resolve all provisioning profiles");
+                                    } else {
+                                        startSigning();
                                     }
-                                    afterAppID(newAppID);
-                                }];
-                            }
+                                    processNext = nil; // 打破 retain cycle
+                                    return;
+                                }
+
+                                NSString *bundleID = remainingBundleIDs.firstObject;
+                                [remainingBundleIDs removeObjectAtIndex:0];
+
+                                ALTAppID *appID = nil;
+                                for (ALTAppID *aid in appIDs) {
+                                    if ([aid.bundleIdentifier isEqualToString:bundleID]) { appID = aid; break; }
+                                }
+
+                                void (^afterAppID)(ALTAppID *) = ^(ALTAppID *resolvedAppID) {
+                                    [api fetchProvisioningProfileForAppID:resolvedAppID team:team session:session completionHandler:^(ALTProvisioningProfile *profile, NSError *error) {
+                                        if (error || !profile) {
+                                            finishWithError([NSString stringWithFormat:@"Failed to fetch profile for %@: %@", bundleID, error]);
+                                            processNext = nil;
+                                            return;
+                                        }
+                                        NSLog(@"[Step 6] Profile acquired for %@: %@ (expires: %@)", bundleID, profile.identifier, profile.expirationDate);
+                                        [profiles addObject:profile];
+                                        dispatch_async(serialQueue, processNext);
+                                    }];
+                                };
+
+                                if (appID) {
+                                    NSLog(@"[Step 5] Reusing existing App ID: %@", appID.bundleIdentifier);
+                                    afterAppID(appID);
+                                } else {
+                                    NSLog(@"[Step 5] Creating App ID: %@", bundleID);
+                                    [api addAppIDWithName:@"AltSign App" bundleIdentifier:bundleID team:team session:session completionHandler:^(ALTAppID *newAppID, NSError *error) {
+                                        if (error || !newAppID) {
+                                            finishWithError([NSString stringWithFormat:@"Failed to create App ID %@: %@", bundleID, error]);
+                                            processNext = nil;
+                                            return;
+                                        }
+                                        afterAppID(newAppID);
+                                    }];
+                                }
+                            };
+
+                            dispatch_async(serialQueue, processNext);
                         }];
                     }];
                 };
@@ -410,7 +440,6 @@ int main(int argc, const char * argv[]) {
         NSString *udid = getArg(args, @"--udid");
         NSString *ipaPath = getArg(args, @"--ipa");
         NSString *outputPath = getArg(args, @"--output");
-        NSString *bundleID = getArg(args, @"--bundle-id");
         ALTVerboseLogging = (getArg(args, @"--verbose") != nil);
 
         // 如果没提供 apple-id/password，尝试从已存 session 获取
@@ -437,7 +466,7 @@ int main(int argc, const char * argv[]) {
                 NSString *base = [ipaPath stringByDeletingPathExtension];
                 outputPath = [base stringByAppendingString:@"_signed.ipa"];
             }
-            performSign(appleID, password, udid, ipaPath, outputPath, bundleID);
+            performSign(appleID, password, udid, ipaPath, outputPath);
 
         } else if ([command isEqualToString:@"list"]) {
             performList(appleID, password);

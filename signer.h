@@ -10,8 +10,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface ALTSigner : NSObject
 
-@property (nonatomic, copy, nullable) NSString *bundleIDOverride;
-
 - (instancetype)initWithCertificate:(ALTCertificate *)certificate;
 
 /// 对 IPA 进行重签名

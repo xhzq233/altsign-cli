@@ -71,20 +71,24 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     }
     NSLog(@"[Signer] Found app bundle: %@", appURL.lastPathComponent);
 
-    // Step 2: 嵌入 Provisioning Profile + 提取 Entitlements
+    // Step 2: 读取主 app 的 Bundle ID 作为 default
+    NSDictionary *mainInfo = [NSDictionary dictionaryWithContentsOfURL:[appURL URLByAppendingPathComponent:@"Info.plist"]];
+    NSString *defaultBundleID = mainInfo[@"CFBundleIdentifier"];
+    if (!defaultBundleID || defaultBundleID.length == 0) {
+        [fm removeItemAtURL:tempDir error:nil];
+        completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-10
+                                       userInfo:@{NSLocalizedDescriptionKey: @"Main app missing CFBundleIdentifier"}]);
+        return;
+    }
+
+    // 嵌入 Provisioning Profile + 提取 Entitlements
     NSMutableDictionary<NSString *, NSString *> *entitlementsByPath = [NSMutableDictionary dictionary];
 
-    [self prepareAppAtURL:appURL provisioningProfiles:profiles entitlementsByPath:entitlementsByPath];
-
-    NSURL *plugInsURL = [appURL URLByAppendingPathComponent:@"PlugIns"];
-    if ([fm fileExistsAtPath:plugInsURL.path]) {
-        for (NSURL *extURL in [fm contentsOfDirectoryAtURL:plugInsURL
-                                includingPropertiesForKeys:nil options:0 error:nil]) {
-            if ([extURL.pathExtension isEqualToString:@"appex"] ||
-                [extURL.pathExtension isEqualToString:@"xctest"]) {
-                [self prepareAppAtURL:extURL provisioningProfiles:profiles entitlementsByPath:entitlementsByPath];
-            }
-        }
+    if (![self prepareAppAtURL:appURL provisioningProfiles:profiles entitlementsByPath:entitlementsByPath defaultBundleID:defaultBundleID]) {
+        [fm removeItemAtURL:tempDir error:nil];
+        completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-10
+                                       userInfo:@{NSLocalizedDescriptionKey: @"Failed to prepare app bundle"}]);
+        return;
     }
 
     if (entitlementsByPath.count == 0) {
@@ -204,7 +208,6 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
 
     // 签名主 app bundle — 从 entitlementsByPath 中找到主 app 二进制对应的 entitlements
     NSString *mainPath = appURL.path;
-    NSDictionary *mainInfo = [NSDictionary dictionaryWithContentsOfURL:[appURL URLByAppendingPathComponent:@"Info.plist"]];
     NSString *mainExe = mainInfo[@"CFBundleExecutable"] ?: @"";
     NSString *mainEnt = entitlementsByPath[[mainPath stringByAppendingPathComponent:mainExe]];
     if (!mainEnt) {
@@ -282,20 +285,26 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
 
 #pragma mark - Prepare App
 
-- (void)prepareAppAtURL:(NSURL *)appURL
+- (BOOL)prepareAppAtURL:(NSURL *)appURL
    provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     entitlementsByPath:(NSMutableDictionary *)entitlementsByPath
+         defaultBundleID:(NSString *)defaultBundleID
 {
     NSURL *infoPlistURL = [appURL URLByAppendingPathComponent:@"Info.plist"];
     NSMutableDictionary *infoPlist = [[NSDictionary dictionaryWithContentsOfURL:infoPlistURL] mutableCopy];
-    NSString *originalBundleID = infoPlist[@"CFBundleIdentifier"] ?: @"";
-    NSString *bundleID = originalBundleID;
+    NSString *originalBundleID = infoPlist[@"CFBundleIdentifier"];
+    if (!originalBundleID || originalBundleID.length == 0) {
+        NSLog(@"[Signer] Error: Missing CFBundleIdentifier in %@", appURL.lastPathComponent);
+        return NO;
+    }
 
-    if (self.bundleIDOverride) {
-        bundleID = self.bundleIDOverride;
+    NSString *bundleID = originalBundleID;
+    // xctest 的 Bundle ID 必须和主 app 一致；appex 保持自己的
+    if ([appURL.pathExtension isEqualToString:@"xctest"]) {
+        bundleID = defaultBundleID;
         infoPlist[@"CFBundleIdentifier"] = bundleID;
         [infoPlist writeToURL:infoPlistURL atomically:YES];
-        NSLog(@"[Signer] Overrode bundle ID: %@ → %@", originalBundleID, bundleID);
+        NSLog(@"[Signer] Overrode xctest bundle ID: %@ → %@", originalBundleID, bundleID);
     }
 
     NSString *executable = infoPlist[@"CFBundleExecutable"] ?: @"";
@@ -316,8 +325,8 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
         }
     }
     if (!matchedProfile) {
-        NSLog(@"[Signer] Warning: No profile found for %@", bundleID);
-        return;
+        NSLog(@"[Signer] Error: No profile found for %@", bundleID);
+        return NO;
     }
 
     NSURL *profileURL = [appURL URLByAppendingPathComponent:@"embedded.mobileprovision"];
@@ -357,10 +366,13 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
                                 includingPropertiesForKeys:nil options:0 error:nil]) {
             if ([extURL.pathExtension isEqualToString:@"appex"] ||
                 [extURL.pathExtension isEqualToString:@"xctest"]) {
-                [self prepareAppAtURL:extURL provisioningProfiles:profiles entitlementsByPath:entitlementsByPath];
+                if (![self prepareAppAtURL:extURL provisioningProfiles:profiles entitlementsByPath:entitlementsByPath defaultBundleID:defaultBundleID]) {
+                    return NO;
+                }
             }
         }
     }
+    return YES;
 }
 
 @end

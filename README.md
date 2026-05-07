@@ -10,7 +10,8 @@ Heavily inspired by and based on the protocol-level reimplementation of [AltSign
 - **End-to-end signing pipeline** — login, certificate management, device registration, provisioning, and re-signing in a single command
 - **SRP authentication** — full Apple GSA (Grand Slam) protocol with 2FA support
 - **Automatic certificate lifecycle** — creates development certificates on demand, persists private keys locally, revokes and recreates when keys are missing
-- **Bundle ID override** — rewrite the app's bundle identifier at sign time via `--bundle-id`
+- **Multi-bundle support** — automatically resolves App IDs and profiles for all `.appex` extensions in the IPA
+- **Capability management** — enable Apple capabilities (HealthKit, App Groups, etc.) on App IDs via `--entitlement`
 - **Session persistence** — authentication sessions are cached and reused (valid ~1 year), avoiding repeated logins
 - **No Xcode required** — only the Command Line Tools
 
@@ -38,9 +39,9 @@ This produces a single `./altsign-cli` binary with no runtime dependencies beyon
     --ipa MyApp.ipa
 ```
 
-This runs the full pipeline: authenticate → fetch team → resolve certificate → register device → resolve App ID → download provisioning profile → re-sign IPA. The signed output defaults to `MyApp_signed.ipa`.
+This runs the full pipeline: authenticate → fetch team → resolve certificate → register device → resolve App IDs → enable capabilities → download provisioning profiles → re-sign IPA. The signed output defaults to `MyApp_signed.ipa`.
 
-**With a custom bundle ID:**
+**With custom capabilities:**
 
 ```bash
 ./altsign-cli sign \
@@ -48,8 +49,7 @@ This runs the full pipeline: authenticate → fetch team → resolve certificate
     --password 'your-password' \
     --udid 00000000-0000000000000000 \
     --ipa MyApp.ipa \
-    --bundle-id com.example.myapp \
-    --output MySignedApp.ipa
+    --entitlement healthkit,app-groups
 ```
 
 ### List certificates and App IDs
@@ -77,8 +77,25 @@ Enter the 6-digit code from your trusted device. The entire 2FA exchange complet
 | `--udid <id>` | sign | Target device UDID |
 | `--ipa <path>` | sign | Input IPA file |
 | `--output <path>` | sign | Output path (default: `<input>_signed.ipa`) |
-| `--bundle-id <id>` | sign | Override bundle identifier |
+| `--entitlement <list>` | sign | Comma-separated capability names to enable (see below) |
 | `--verbose` | any | Print full API responses |
+
+### Available Capabilities (`--entitlement`)
+
+These names can be passed to `--entitlement` (comma-separated):
+
+| Name | Capability | Free Account |
+|------|-----------|--------------|
+| `in-app-purchase` | In-App Purchase | Yes |
+| `healthkit` | HealthKit | Yes |
+| `push` | Push Notifications | Yes |
+| `sign-in-with-apple` | Sign In with Apple | Yes |
+| `app-groups` | App Groups | Yes |
+| `external-accessory` | Wireless Accessory Configuration | Yes |
+| `gamecenter` | Game Center | Yes |
+| `vpn` | Network Extension / VPN | **No** — requires paid account |
+
+**Note:** The `vpn` capability (Network Extension) is blocked by Apple for free accounts. Attempting to enable it will return error code 9313: *"The 'VPN' feature is only available to users enrolled in Apple Developer Program."*
 
 ## Overview
 
@@ -169,12 +186,13 @@ The signing pipeline:
 
 1. **Extract** the IPA via `ditto`
 2. **Locate** the `.app` bundle and any `.appex`/`.xctest` extensions
-3. **Rewrite** `CFBundleIdentifier` if `--bundle-id` is specified
-4. **Embed** the provisioning profile as `embedded.mobileprovision`
-5. **Parse** entitlements from the profile's embedded plist
-6. **Generate a P12** — SHA-1 MAC forced via `PKCS12_set_mac` for macOS `security import` compatibility
-7. **Sign inside-out**: sub-frameworks → frameworks → dylibs → extensions → app bundle, each via a temporary keychain + `codesign`
-8. **Repack** into an IPA via `zip`
+3. **Resolve all Bundle IDs** — extract unique identifiers from the app and all extensions
+4. **Enable capabilities** on each App ID (if `--entitlement` is specified)
+5. **Embed** the provisioning profile as `embedded.mobileprovision`
+6. **Parse** entitlements from the profile's embedded plist
+7. **Generate a P12** — SHA-1 MAC forced via `PKCS12_set_mac` for macOS `security import` compatibility
+8. **Sign inside-out**: sub-frameworks → frameworks → dylibs → extensions → app bundle, each via a temporary keychain + `codesign`
+9. **Repack** into an IPA via `zip`
 
 ### Certificate Management
 
@@ -188,7 +206,8 @@ Free Apple Developer accounts are limited to one active iOS development certific
 
 - **macOS only** — Anisette data retrieval requires Apple's private frameworks (AOSKit/AuthKit)
 - **7-day profile expiry** — free developer accounts' provisioning profiles expire after 7 days; re-sign to refresh
-- **Bundle ID conflicts** — some bundle identifiers are globally registered by other developers; use `--bundle-id` to specify an alternative
+- **Entitlement restrictions** — certain capabilities (Network Extension/VPN, Apple Pay, etc.) are only available to paid Apple Developer Program members ($99/year). Free accounts can only enable the capabilities listed above
+- **Profile entitlements** — entitlements come from the provisioning profile, not from `.entitlements` files. The profile is generated by Apple's servers based on the capabilities enabled on the App ID
 
 ## Acknowledgments
 

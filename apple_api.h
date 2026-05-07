@@ -105,6 +105,14 @@ NS_ASSUME_NONNULL_BEGIN
        completionHandler:(void (^)(ALTAppID * _Nullable appID,
                                    NSError * _Nullable error))completion;
 
+/// 更新 App ID（启用/禁用 capabilities）
+- (void)updateAppID:(ALTAppID *)appID
+            features:(NSDictionary<NSString *, id> *)features
+                team:(ALTTeam *)team
+             session:(ALTAppleAPISession *)session
+   completionHandler:(void (^)(ALTAppID * _Nullable appID,
+                               NSError * _Nullable error))completion;
+
 /// 下载 Provisioning Profile
 - (void)fetchProvisioningProfileForAppID:(ALTAppID *)appID
                                     team:(ALTTeam *)team

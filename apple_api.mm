@@ -565,6 +565,36 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
             }];
 }
 
+- (void)updateAppID:(ALTAppID *)appID
+            features:(NSDictionary<NSString *, id> *)features
+                team:(ALTTeam *)team
+             session:(ALTAppleAPISession *)session
+   completionHandler:(void (^)(ALTAppID *, NSError *))completion
+{
+    NSURL *URL = [NSURL URLWithString:@"ios/updateAppId.action" relativeToURL:
+                  [NSURL URLWithString:kBaseURL]];
+
+    NSMutableDictionary *params = [@{@"appIdId": appID.identifier} mutableCopy];
+    [features enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
+        params[key] = value;
+    }];
+
+    [self sendRequestWithURL:URL additionalParameters:params session:session team:team
+        completionHandler:^(NSDictionary *response, NSError *error) {
+            if (error) { completion(nil, error); return; }
+
+            NSDictionary *appDict = response[@"appId"];
+            ALTAppID *updated = [[ALTAppID alloc] init];
+            updated.identifier = appDict[@"appIdId"] ?: appID.identifier;
+            updated.bundleIdentifier = appDict[@"identifier"] ?: appID.bundleIdentifier;
+            updated.name = appDict[@"name"] ?: appID.name;
+
+            NSArray *enabled = appDict[@"enabledFeatures"];
+            NSLog(@"[API] App ID updated: %@, enabledFeatures: %@", updated.bundleIdentifier, enabled);
+            completion(updated, nil);
+        }];
+}
+
 #pragma mark - Provisioning Profiles
 
 - (void)fetchProvisioningProfileForAppID:(ALTAppID *)appID

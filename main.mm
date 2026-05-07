@@ -43,12 +43,46 @@ static NSData * _Nullable loadCertKey(NSString *certID) {
     return [NSData dataWithContentsOfURL:[dir URLByAppendingPathComponent:filename]];
 }
 
+// ============================================================
+// Capability 名称 → Feature ID 映射
+// ============================================================
+
+static NSDictionary<NSString *, NSString *> *capabilityFeatureMap(void) {
+    return @{
+        @"in-app-purchase":    @"APG3427HIY",
+        @"healthkit":          @"HK421J6T7P",
+        @"push":               @"IAD53UNK2F",
+        @"sign-in-with-apple": @"LPLF93JG7M",
+        @"app-groups":         @"SKC3T5S89Y",
+        @"vpn":                @"V66P55NK2I",
+        @"external-accessory": @"WC421J6T7P",
+        @"gamecenter":         @"gameCenter",
+    };
+}
+
+static void printCapabilities(void) {
+    fprintf(stderr,
+        "可用的 --entitlement 名称:\n"
+        "  in-app-purchase    应用内购买\n"
+        "  healthkit          HealthKit\n"
+        "  push               远程推送\n"
+        "  sign-in-with-apple Apple 登录\n"
+        "  app-groups         应用组\n"
+        "  external-accessory 无线配件配置\n"
+        "  gamecenter         游戏中心\n"
+        "\n"
+        "需要付费开发者账号 ($99/年):\n"
+        "  vpn                网络扩展 / VPN (Network Extension)\n"
+        "\n"
+    );
+}
+
 static void printUsage(void) {
     fprintf(stderr,
         "AltSign CLI — macOS IPA 自签名工具\n"
         "\n"
         "用法:\n"
-        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <file> [--output <file>]\n"
+        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <file> [--output <file>] [--entitlement <list>]\n"
         "  altsign-cli list   --apple-id <email> --password <pwd>\n"
         "\n"
         "命令:\n"
@@ -56,14 +90,16 @@ static void printUsage(void) {
         "  list   登录后拉取开发证书 + App ID 列表（只读）\n"
         "\n"
         "选项:\n"
-        "  --apple-id    Apple ID 邮箱\n"
-        "  --password    Apple ID 密码\n"
-        "  --udid        iOS 设备 UDID\n"
-        "  --ipa         待签名的 IPA 文件路径\n"
-        "  --output      输出签名后的 IPA 路径 (默认在原文件名加 _signed)\n"
-        "  --verbose     打印完整日志（默认截断大响应）\n"
+        "  --apple-id      Apple ID 邮箱\n"
+        "  --password      Apple ID 密码\n"
+        "  --udid          iOS 设备 UDID\n"
+        "  --ipa           待签名的 IPA 文件路径\n"
+        "  --output        输出签名后的 IPA 路径 (默认在原文件名加 _signed)\n"
+        "  --entitlement   启用的 capabilities，逗号分隔 (如 healthkit,app-groups)\n"
+        "  --verbose       打印完整日志（默认截断大响应）\n"
         "\n"
     );
+    printCapabilities();
 }
 
 static NSString * _Nullable getArg(NSArray *args, NSString *flag) {
@@ -174,7 +210,8 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
 // ============================================================
 
 static void performSign(NSString *appleID, NSString *password,
-                        NSString *udid, NSString *ipaPath, NSString *outputPath)
+                        NSString *udid, NSString *ipaPath, NSString *outputPath,
+                        NSArray<NSString *> *entitlementNames)
 {
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
@@ -284,16 +321,44 @@ static void performSign(NSString *appleID, NSString *password,
                                 }
 
                                 void (^afterAppID)(ALTAppID *) = ^(ALTAppID *resolvedAppID) {
-                                    [api fetchProvisioningProfileForAppID:resolvedAppID team:team session:session completionHandler:^(ALTProvisioningProfile *profile, NSError *error) {
-                                        if (error || !profile) {
-                                            finishWithError([NSString stringWithFormat:@"Failed to fetch profile for %@: %@", bundleID, error]);
-                                            processNext = nil;
-                                            return;
+                                    // 如果指定了 --entitlement，先启用对应的 capabilities
+                                    void (^fetchProfile)(ALTAppID *) = ^(ALTAppID *finalAppID) {
+                                        [api fetchProvisioningProfileForAppID:finalAppID team:team session:session completionHandler:^(ALTProvisioningProfile *profile, NSError *error) {
+                                            if (error || !profile) {
+                                                finishWithError([NSString stringWithFormat:@"Failed to fetch profile for %@: %@", bundleID, error]);
+                                                processNext = nil;
+                                                return;
+                                            }
+                                            NSLog(@"[Step 6] Profile acquired for %@: %@ (expires: %@)", bundleID, profile.identifier, profile.expirationDate);
+                                            [profiles addObject:profile];
+                                            dispatch_async(serialQueue, processNext);
+                                        }];
+                                    };
+
+                                    if (entitlementNames.count > 0) {
+                                        // 构建 features 字典
+                                        NSDictionary *map = capabilityFeatureMap();
+                                        NSMutableDictionary *features = [NSMutableDictionary dictionary];
+                                        for (NSString *name in entitlementNames) {
+                                            NSString *featureID = map[name.lowercaseString];
+                                            if (featureID) {
+                                                features[featureID] = @"1";
+                                            }
                                         }
-                                        NSLog(@"[Step 6] Profile acquired for %@: %@ (expires: %@)", bundleID, profile.identifier, profile.expirationDate);
-                                        [profiles addObject:profile];
-                                        dispatch_async(serialQueue, processNext);
-                                    }];
+                                        if (features.count > 0) {
+                                            NSLog(@"[Step 5] Enabling capabilities: %@", entitlementNames);
+                                            [api updateAppID:resolvedAppID features:features team:team session:session completionHandler:^(ALTAppID *updated, NSError *error) {
+                                                if (error) {
+                                                    NSLog(@"[Warning] Failed to enable capabilities: %@", error.localizedDescription);
+                                                }
+                                                fetchProfile(updated ?: resolvedAppID);
+                                            }];
+                                        } else {
+                                            fetchProfile(resolvedAppID);
+                                        }
+                                    } else {
+                                        fetchProfile(resolvedAppID);
+                                    }
                                 };
 
                                 if (appID) {
@@ -440,7 +505,25 @@ int main(int argc, const char * argv[]) {
         NSString *udid = getArg(args, @"--udid");
         NSString *ipaPath = getArg(args, @"--ipa");
         NSString *outputPath = getArg(args, @"--output");
+        NSString *entitlementArg = getArg(args, @"--entitlement");
         ALTVerboseLogging = (getArg(args, @"--verbose") != nil);
+
+        NSArray<NSString *> *entitlementNames = @[];
+        if (entitlementArg.length > 0) {
+            NSMutableArray *names = [NSMutableArray array];
+            for (NSString *part in [entitlementArg componentsSeparatedByString:@","]) {
+                NSString *trimmed = [part stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                if (trimmed.length > 0) {
+                    NSString *lower = trimmed.lowercaseString;
+                    if (capabilityFeatureMap()[lower]) {
+                        [names addObject:lower];
+                    } else {
+                        fprintf(stderr, "Warning: unknown entitlement '%s', skipping\n", trimmed.UTF8String);
+                    }
+                }
+            }
+            entitlementNames = names;
+        }
 
         // 如果没提供 apple-id/password，尝试从已存 session 获取
         if (!appleID || !password) {
@@ -466,7 +549,7 @@ int main(int argc, const char * argv[]) {
                 NSString *base = [ipaPath stringByDeletingPathExtension];
                 outputPath = [base stringByAppendingString:@"_signed.ipa"];
             }
-            performSign(appleID, password, udid, ipaPath, outputPath);
+            performSign(appleID, password, udid, ipaPath, outputPath, entitlementNames);
 
         } else if ([command isEqualToString:@"list"]) {
             performList(appleID, password);

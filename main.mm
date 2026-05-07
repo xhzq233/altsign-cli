@@ -141,8 +141,7 @@ static NSArray<NSString *> * _Nullable extractBundleIDsFromIPA(NSString *ipaPath
                                                    errorHandler:nil];
         for (NSURL *url in enumerator) {
             NSString *ext = url.pathExtension;
-            // xctest 的 Bundle ID 会被覆盖成主 app 的，不需要单独提取；appex 保持自己的
-            if ([ext isEqualToString:@"app"] || [ext isEqualToString:@"appex"]) {
+            if ([ext isEqualToString:@"app"] || [ext isEqualToString:@"appex"] || [ext isEqualToString:@"xctest"]) {
                 NSURL *infoPlistURL = [url URLByAppendingPathComponent:@"Info.plist"];
                 NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfURL:infoPlistURL];
                 NSString *bundleID = infoPlist[@"CFBundleIdentifier"];

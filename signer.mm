@@ -299,13 +299,6 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
     }
 
     NSString *bundleID = originalBundleID;
-    // xctest 的 Bundle ID 必须和主 app 一致；appex 保持自己的
-    if ([appURL.pathExtension isEqualToString:@"xctest"]) {
-        bundleID = defaultBundleID;
-        infoPlist[@"CFBundleIdentifier"] = bundleID;
-        [infoPlist writeToURL:infoPlistURL atomically:YES];
-        NSLog(@"[Signer] Overrode xctest bundle ID: %@ → %@", originalBundleID, bundleID);
-    }
 
     NSString *executable = infoPlist[@"CFBundleExecutable"] ?: @"";
 

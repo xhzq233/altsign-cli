@@ -49,11 +49,11 @@ static NSData * _Nullable loadCertKey(NSString *certID) {
 
 static NSDictionary<NSString *, NSString *> *capabilityFeatureMap(void) {
     return @{
-        @"in-app-purchase":    @"APG3427HIY",
+        @"app-groups":         @"APG3427HIY",
         @"healthkit":          @"HK421J6T7P",
         @"push":               @"IAD53UNK2F",
         @"sign-in-with-apple": @"LPLF93JG7M",
-        @"app-groups":         @"SKC3T5S89Y",
+        @"associated-domains": @"SKC3T5S89Y",
         @"vpn":                @"V66P55NK2I",
         @"external-accessory": @"WC421J6T7P",
         @"gamecenter":         @"gameCenter",
@@ -63,16 +63,16 @@ static NSDictionary<NSString *, NSString *> *capabilityFeatureMap(void) {
 static void printCapabilities(void) {
     fprintf(stderr,
         "可用的 --entitlement 名称:\n"
-        "  in-app-purchase    应用内购买\n"
-        "  healthkit          HealthKit\n"
-        "  push               远程推送\n"
-        "  sign-in-with-apple Apple 登录\n"
-        "  app-groups         应用组\n"
-        "  external-accessory 无线配件配置\n"
-        "  gamecenter         游戏中心\n"
+        "  app-groups           应用组 (com.apple.security.application-groups)\n"
+        "  healthkit            HealthKit\n"
+        "  push                 远程推送\n"
+        "  sign-in-with-apple   Apple 登录\n"
+        "  associated-domains   关联域名\n"
+        "  external-accessory   无线配件配置\n"
+        "  gamecenter           游戏中心\n"
         "\n"
         "需要付费开发者账号 ($99/年):\n"
-        "  vpn                网络扩展 / VPN (Network Extension)\n"
+        "  vpn                  网络扩展 / VPN (Network Extension)\n"
         "\n"
     );
 }

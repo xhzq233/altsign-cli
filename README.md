@@ -84,18 +84,18 @@ Enter the 6-digit code from your trusted device. The entire 2FA exchange complet
 
 These names can be passed to `--entitlement` (comma-separated):
 
-| Name | Capability | Free Account |
-|------|-----------|--------------|
-| `in-app-purchase` | In-App Purchase | Yes |
-| `healthkit` | HealthKit | Yes |
-| `push` | Push Notifications | Yes |
-| `sign-in-with-apple` | Sign In with Apple | Yes |
-| `app-groups` | App Groups | Yes |
-| `external-accessory` | Wireless Accessory Configuration | Yes |
-| `gamecenter` | Game Center | Yes |
-| `vpn` | Network Extension / VPN | **No** — requires paid account |
+| Name | Capability | Entitlement Key | Free Account |
+|------|-----------|----------------|--------------|
+| `app-groups` | App Groups | `com.apple.security.application-groups` | Yes |
+| `healthkit` | HealthKit | `com.apple.developer.healthkit` | Yes |
+| `push` | Push Notifications | `aps-environment` | Yes |
+| `sign-in-with-apple` | Sign In with Apple | `com.apple.developer.apple-id-auth` | Yes |
+| `associated-domains` | Associated Domains | `com.apple.developer.associated-domains` | **No** |
+| `external-accessory` | Wireless Accessory Configuration | `com.apple.external-accessory.wireless-configuration` | Yes |
+| `gamecenter` | Game Center | `com.apple.developer.game-center` | Yes |
+| `vpn` | Network Extension / VPN | `com.apple.developer.networking.networkextension` | **No** — requires paid account |
 
-**Note:** The `vpn` capability (Network Extension) is blocked by Apple for free accounts. Attempting to enable it will return error code 9313: *"The 'VPN' feature is only available to users enrolled in Apple Developer Program."*
+**Note:** Capabilities marked **No** are blocked by Apple for free accounts (error code 9313). A paid Apple Developer Program membership ($99/year) is required.
 
 ## Overview
 

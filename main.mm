@@ -4,7 +4,8 @@
 //
 //  macOS 命令行自签名工具
 //  Usage:
-//    altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <path> [--output <path>]
+//    altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <path.ipa|path.app> [--output <path.ipa>]
+//    altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --app <path.app> [--output <path.ipa>]
 //    altsign-cli cert   --apple-id <email> --password <pwd>
 //
 //  如需 2FA，会自动提示输入验证码（stdin），无需额外参数。
@@ -79,21 +80,23 @@ static void printCapabilities(void) {
 
 static void printUsage(void) {
     fprintf(stderr,
-        "AltSign CLI — macOS IPA 自签名工具\n"
+        "AltSign CLI — macOS IPA/.app 自签名工具\n"
         "\n"
         "用法:\n"
-        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <file> [--output <file>] [--entitlement <list>]\n"
+        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <file.ipa|file.app> [--output <file.ipa>] [--entitlement <list>]\n"
+        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --app <file.app> [--output <file.ipa>] [--entitlement <list>]\n"
         "  altsign-cli list   --apple-id <email> --password <pwd>\n"
         "\n"
         "命令:\n"
-        "  sign   完整签名流程: 登录 → 拉证书 → 注册设备 → 创建PP → 重签IPA\n"
+        "  sign   完整签名流程: 登录 → 拉证书 → 注册设备 → 创建PP → 重签IPA/.app\n"
         "  list   登录后拉取开发证书 + App ID 列表（只读）\n"
         "\n"
         "选项:\n"
         "  --apple-id      Apple ID 邮箱\n"
         "  --password      Apple ID 密码\n"
         "  --udid          iOS 设备 UDID\n"
-        "  --ipa           待签名的 IPA 文件路径\n"
+        "  --ipa           待签名的 IPA 或 .app 路径\n"
+        "  --app           待签名的 .app 路径\n"
         "  --output        输出签名后的 IPA 路径 (默认在原文件名加 _signed)\n"
         "  --entitlement   启用的 capabilities，逗号分隔 (如 healthkit,app-groups)\n"
         "  --verbose       打印完整日志（默认截断大响应）\n"
@@ -113,6 +116,46 @@ static NSString * _Nullable getArg(NSArray *args, NSString *flag) {
         return args[idx + 1];
     }
     return nil;
+}
+
+static BOOL isAppBundlePath(NSString *path) {
+    return [path.pathExtension.lowercaseString isEqualToString:@"app"];
+}
+
+static BOOL isIPAPath(NSString *path) {
+    return [path.pathExtension.lowercaseString isEqualToString:@"ipa"];
+}
+
+static NSArray<NSString *> * _Nullable extractBundleIDsFromAppBundle(NSString *appPath) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:appPath isDirectory:&isDir] || !isDir || !isAppBundlePath(appPath)) {
+        return nil;
+    }
+
+    NSMutableArray<NSString *> *bundleIDs = [NSMutableArray array];
+    void (^appendBundleID)(NSURL *) = ^(NSURL *url) {
+        NSURL *infoPlistURL = [url URLByAppendingPathComponent:@"Info.plist"];
+        NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfURL:infoPlistURL];
+        NSString *bundleID = infoPlist[@"CFBundleIdentifier"];
+        if (bundleID.length > 0) [bundleIDs addObject:bundleID];
+    };
+
+    NSURL *appURL = [NSURL fileURLWithPath:appPath];
+    appendBundleID(appURL);
+
+    NSDirectoryEnumerator *enumerator = [fm enumeratorAtURL:appURL
+                                 includingPropertiesForKeys:nil
+                                                    options:NSDirectoryEnumerationSkipsHiddenFiles
+                                               errorHandler:nil];
+    for (NSURL *url in enumerator) {
+        NSString *ext = url.pathExtension;
+        if ([ext isEqualToString:@"appex"] || [ext isEqualToString:@"xctest"]) {
+            appendBundleID(url);
+        }
+    }
+
+    return bundleIDs.count > 0 ? bundleIDs : nil;
 }
 
 static NSArray<NSString *> * _Nullable extractBundleIDsFromIPA(NSString *ipaPath) {
@@ -209,17 +252,23 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
 // ============================================================
 
 static void performSign(NSString *appleID, NSString *password,
-                        NSString *udid, NSString *ipaPath, NSString *outputPath,
+                        NSString *udid, NSString *inputPath, NSString *outputPath,
                         NSArray<NSString *> *entitlementNames)
 {
+    BOOL inputIsApp = isAppBundlePath(inputPath);
+    if (!inputIsApp && !isIPAPath(inputPath)) {
+        NSLog(@"[Error] Input must be an .ipa file or .app bundle: %@", inputPath);
+        return;
+    }
+
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
     NSLog(@"========================================");
-    NSLog(@" AltSign CLI — IPA 自签名工具");
+    NSLog(@" AltSign CLI — IPA/.app 自签名工具");
     NSLog(@"========================================");
     NSLog(@" Apple ID:  %@", appleID);
     NSLog(@" UDID:      %@", udid);
-    NSLog(@" IPA:       %@", ipaPath);
+    NSLog(@" Input:     %@", inputPath);
     NSLog(@" Output:    %@", outputPath);
     NSLog(@"========================================");
 
@@ -255,10 +304,10 @@ static void performSign(NSString *appleID, NSString *password,
                     [api registerDeviceWithName:@"AltSign Device" identifier:udid team:team session:session completionHandler:^(ALTDevice *device, NSError *error) {
                         NSLog(@"[Step 4] Device registered or already exists");
 
-                        // Step 5: 提取 IPA 中所有需要签名的 bundle ID
-                        NSArray<NSString *> *bundleIDs = extractBundleIDsFromIPA(ipaPath);
+                        // Step 5: 提取所有需要签名的 bundle ID
+                        NSArray<NSString *> *bundleIDs = inputIsApp ? extractBundleIDsFromAppBundle(inputPath) : extractBundleIDsFromIPA(inputPath);
                         if (!bundleIDs || bundleIDs.count == 0) {
-                            NSLog(@"[Error] Failed to read bundle IDs from IPA");
+                            NSLog(@"[Error] Failed to read bundle IDs from input");
                             dispatch_semaphore_signal(sem);
                             return;
                         }
@@ -281,12 +330,9 @@ static void performSign(NSString *appleID, NSString *password,
                             };
 
                             void (^startSigning)(void) = ^{
-                                NSLog(@"[Step 7] Signing IPA...");
+                                NSLog(@"[Step 7] Signing %@...", inputIsApp ? @".app" : @"IPA");
                                 ALTSigner *signer = [[ALTSigner alloc] initWithCertificate:cert];
-                                [signer signIPAAtURL:[NSURL fileURLWithPath:ipaPath]
-                                    provisioningProfiles:profiles
-                                               outputURL:[NSURL fileURLWithPath:outputPath]
-                                       completionHandler:^(BOOL success, NSError *error) {
+                                void (^completion)(BOOL, NSError *) = ^(BOOL success, NSError *error) {
                                     if (success) {
                                         NSLog(@"✅ [Done] IPA signed successfully!");
                                         NSLog(@"   Output: %@", outputPath);
@@ -294,7 +340,18 @@ static void performSign(NSString *appleID, NSString *password,
                                         NSLog(@"❌ [Error] Signing failed: %@", error);
                                     }
                                     dispatch_semaphore_signal(sem);
-                                }];
+                                };
+                                if (inputIsApp) {
+                                    [signer signAppAtURL:[NSURL fileURLWithPath:inputPath]
+                                     provisioningProfiles:profiles
+                                                outputURL:[NSURL fileURLWithPath:outputPath]
+                                        completionHandler:completion];
+                                } else {
+                                    [signer signIPAAtURL:[NSURL fileURLWithPath:inputPath]
+                                     provisioningProfiles:profiles
+                                                outputURL:[NSURL fileURLWithPath:outputPath]
+                                        completionHandler:completion];
+                                }
                             };
 
                             // 串行处理每个 Bundle ID 的 App ID + Profile（避免主线程死锁）
@@ -503,6 +560,7 @@ int main(int argc, const char * argv[]) {
         NSString *password = getArg(args, @"--password");
         NSString *udid = getArg(args, @"--udid");
         NSString *ipaPath = getArg(args, @"--ipa");
+        NSString *appPath = getArg(args, @"--app");
         NSString *outputPath = getArg(args, @"--output");
         NSString *entitlementArg = getArg(args, @"--entitlement");
         ALTVerboseLogging = (getArg(args, @"--verbose") != nil);
@@ -539,16 +597,22 @@ int main(int argc, const char * argv[]) {
         }
 
         if ([command isEqualToString:@"sign"]) {
-            if (!udid || !ipaPath) {
-                fprintf(stderr, "Error: --udid and --ipa are required for sign command\n\n");
+            if (ipaPath && appPath) {
+                fprintf(stderr, "Error: use either --ipa or --app, not both\n\n");
+                printUsage();
+                return 1;
+            }
+            NSString *inputPath = ipaPath ?: appPath;
+            if (!udid || !inputPath) {
+                fprintf(stderr, "Error: --udid and one of --ipa/--app are required for sign command\n\n");
                 printUsage();
                 return 1;
             }
             if (!outputPath) {
-                NSString *base = [ipaPath stringByDeletingPathExtension];
+                NSString *base = [inputPath stringByDeletingPathExtension];
                 outputPath = [base stringByAppendingString:@"_signed.ipa"];
             }
-            performSign(appleID, password, udid, ipaPath, outputPath, entitlementNames);
+            performSign(appleID, password, udid, inputPath, outputPath, entitlementNames);
 
         } else if ([command isEqualToString:@"list"]) {
             performList(appleID, password);

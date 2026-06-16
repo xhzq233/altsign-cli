@@ -10,6 +10,11 @@
 
 @interface ALTSigner ()
 @property (nonatomic, strong) ALTCertificate *certificate;
+- (void)signPayloadInTemporaryDirectory:(NSURL *)tempDir
+                                 appURL:(NSURL *)appURL
+                   provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
+                              outputURL:(NSURL *)outputURL
+                      completionHandler:(void (^)(BOOL success, NSError * _Nullable error))completion;
 @end
 
 @implementation ALTSigner
@@ -30,8 +35,6 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
    completionHandler:(void (^)(BOOL, NSError *))completion
 {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSError *error = nil;
-
     // Step 1: 解压 IPA
     NSURL *tempDir = [fm.temporaryDirectory URLByAppendingPathComponent:
                       [[NSUUID UUID] UUIDString]];
@@ -70,6 +73,62 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
         return;
     }
     NSLog(@"[Signer] Found app bundle: %@", appURL.lastPathComponent);
+
+    [self signPayloadInTemporaryDirectory:tempDir
+                                    appURL:appURL
+                      provisioningProfiles:profiles
+                                 outputURL:outputURL
+                         completionHandler:completion];
+}
+
+- (void)signAppAtURL:(NSURL *)sourceAppURL
+provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
+           outputURL:(NSURL *)outputURL
+   completionHandler:(void (^)(BOOL, NSError *))completion
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:sourceAppURL.path isDirectory:&isDir] || !isDir || ![sourceAppURL.pathExtension isEqualToString:@"app"]) {
+        completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-11
+                                       userInfo:@{NSLocalizedDescriptionKey: @"Input path is not an .app bundle"}]);
+        return;
+    }
+
+    NSURL *tempDir = [fm.temporaryDirectory URLByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
+    NSURL *payloadDir = [tempDir URLByAppendingPathComponent:@"Payload"];
+    [fm createDirectoryAtURL:payloadDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSURL *appURL = [payloadDir URLByAppendingPathComponent:sourceAppURL.lastPathComponent];
+    NSLog(@"[Signer] Copying .app bundle: %@", sourceAppURL.path);
+
+    NSTask *copyTask = [[NSTask alloc] init];
+    copyTask.launchPath = @"/usr/bin/ditto";
+    copyTask.arguments = @[sourceAppURL.path, appURL.path];
+    [copyTask launch];
+    [copyTask waitUntilExit];
+
+    if (copyTask.terminationStatus != 0) {
+        [fm removeItemAtURL:tempDir error:nil];
+        completion(NO, [NSError errorWithDomain:@"com.altsign.signer" code:-12
+                                       userInfo:@{NSLocalizedDescriptionKey: @"Failed to copy .app bundle"}]);
+        return;
+    }
+
+    NSLog(@"[Signer] Found app bundle: %@", appURL.lastPathComponent);
+    [self signPayloadInTemporaryDirectory:tempDir
+                                    appURL:appURL
+                      provisioningProfiles:profiles
+                                 outputURL:outputURL
+                         completionHandler:completion];
+}
+
+- (void)signPayloadInTemporaryDirectory:(NSURL *)tempDir
+                                 appURL:(NSURL *)appURL
+                   provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
+                              outputURL:(NSURL *)outputURL
+                      completionHandler:(void (^)(BOOL, NSError *))completion
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
 
     // Step 2: 读取主 app 的 Bundle ID 作为 default
     NSDictionary *mainInfo = [NSDictionary dictionaryWithContentsOfURL:[appURL URLByAppendingPathComponent:@"Info.plist"]];

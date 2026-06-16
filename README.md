@@ -1,6 +1,6 @@
 # altsign-cli
 
-One command to sign any IPA with your free Apple ID. No jailbreak, no paid developer account, no Xcode project.
+One command to sign any IPA or `.app` bundle with your free Apple ID. No jailbreak, no paid developer account, no Xcode project.
 
 ```bash
 ./altsign-cli sign \
@@ -10,12 +10,24 @@ One command to sign any IPA with your free Apple ID. No jailbreak, no paid devel
     --ipa MyApp.ipa
 ```
 
-That's it. Authenticate, create certificates, register device, provision, and sign — all in one shot.
+For an `.app` bundle:
+
+```bash
+./altsign-cli sign \
+    --apple-id you@example.com \
+    --password 'your-password' \
+    --udid 00000000-0000000000000000 \
+    --app path/to/MyApp.app \
+    --output MyApp_signed.ipa
+```
+
+That's it. Authenticate, create certificates, register device, provision, package when needed, and sign — all in one shot.
 
 ## Features
 
 - **Free Apple ID** — no $99/year membership needed
 - **Single command** — the entire signing pipeline runs end-to-end
+- **IPA and `.app` input** — pass an IPA with `--ipa` or an app bundle with `--app`
 - **2FA built-in** — prompts for the code inline, no extra steps
 - **Auto certificate management** — creates, persists, and rotates signing certificates automatically
 - **Multi-bundle** — handles `.appex` extensions in the IPA
@@ -48,6 +60,19 @@ Produces a single `./altsign-cli` binary.
 ```
 
 Output: `MyApp_signed.ipa` (or specify `--output path.ipa`).
+
+### Sign an `.app`
+
+```bash
+./altsign-cli sign \
+    --apple-id you@example.com \
+    --password 'your-password' \
+    --udid 00000000-0000000000000000 \
+    --app path/to/MyApp.app \
+    --output MyApp_signed.ipa
+```
+
+The tool packages the app into a temporary IPA, signs it, and writes a signed IPA to `--output`.
 
 ### Enable capabilities
 
@@ -83,7 +108,8 @@ Enter the 6-digit code from your trusted device. Done.
 | `--apple-id <email>` | all | Apple ID email |
 | `--password <pwd>` | all | Apple ID password |
 | `--udid <id>` | sign | Target device UDID |
-| `--ipa <path>` | sign | Input IPA file |
+| `--ipa <path>` | sign | Input IPA file, or an `.app` bundle for compatibility |
+| `--app <path>` | sign | Input `.app` bundle |
 | `--output <path>` | sign | Output path (default: `<input>_signed.ipa`) |
 | `--entitlement <list>` | sign | Comma-separated capabilities (see below) |
 | `--verbose` | any | Print full API responses |

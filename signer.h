@@ -22,6 +22,16 @@ provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
            outputURL:(NSURL *)outputURL
    completionHandler:(void (^)(BOOL success, NSError * _Nullable error))completion;
 
+/// 对 .app bundle 进行重签名并输出 IPA
+/// @param appURL .app bundle 路径
+/// @param profiles 按 bundleID 匹配的 Provisioning Profile 列表
+/// @param outputURL 输出 IPA 路径
+/// @param completion 完成回调
+- (void)signAppAtURL:(NSURL *)appURL
+provisioningProfiles:(NSArray<ALTProvisioningProfile *> *)profiles
+           outputURL:(NSURL *)outputURL
+   completionHandler:(void (^)(BOOL success, NSError * _Nullable error))completion;
+
 @end
 
 NS_ASSUME_NONNULL_END

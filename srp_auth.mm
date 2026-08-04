@@ -326,20 +326,14 @@ static void SendGSARequest(NSDictionary *requestDict,
     [task resume];
 }
 
-static NSString *SessionStorePath(void) {
+static NSString *SessionStoreDirectory(void) {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
     NSString *base = paths.firstObject ?: NSHomeDirectory();
-    NSString *dir = [base stringByAppendingPathComponent:@"altsign"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    return [dir stringByAppendingPathComponent:@"session.plist"];
+    return [base stringByAppendingPathComponent:@"altsign"];
 }
 
-static NSString *Pending2FAStorePath(void) {
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
-    NSString *base = paths.firstObject ?: NSHomeDirectory();
-    NSString *dir = [base stringByAppendingPathComponent:@"altsign"];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    return [dir stringByAppendingPathComponent:@"2fa_pending.plist"];
+static NSString *SessionStorePath(void) {
+    return [SessionStoreDirectory() stringByAppendingPathComponent:@"session.plist"];
 }
 
 @implementation ALTAppleAPISession
@@ -358,12 +352,16 @@ static NSString *Pending2FAStorePath(void) {
 }
 
 - (BOOL)saveForAppleID:(NSString *)appleID {
-    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
-    dict[@"appleID"] = appleID;
-    dict[@"dsid"] = self.dsid;
-    dict[@"authToken"] = self.authToken;
+    if (appleID.length == 0 || self.dsid.length == 0 ||
+        self.authToken.length == 0 || self.anisetteData == nil) {
+        return NO;
+    }
+
+    NSMutableDictionary *session = [NSMutableDictionary dictionary];
+    session[@"dsid"] = self.dsid;
+    session[@"authToken"] = self.authToken;
     if (self.expirationDate) {
-        dict[@"expirationDate"] = self.expirationDate;
+        session[@"expirationDate"] = self.expirationDate;
     }
 
     NSMutableDictionary *anisette = [NSMutableDictionary dictionary];
@@ -377,31 +375,101 @@ static NSString *Pending2FAStorePath(void) {
     anisette[@"date"] = self.anisetteData.date ?: [NSDate date];
     anisette[@"locale"] = self.anisetteData.locale ?: @"";
     anisette[@"timeZone"] = self.anisetteData.timeZone ?: @"";
-    dict[@"anisetteData"] = anisette;
+    session[@"anisetteData"] = anisette;
 
-    return [dict writeToFile:SessionStorePath() atomically:YES];
+    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
+    NSDictionary *storedAccounts = [stored[@"accounts"] isKindOfClass:NSDictionary.class]
+        ? stored[@"accounts"]
+        : @{};
+    NSMutableDictionary *accounts = [storedAccounts mutableCopy];
+    accounts[appleID] = session;
+    NSDictionary *root = @{
+        @"currentAppleID": appleID,
+        @"accounts": accounts,
+    };
+
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *directory = SessionStoreDirectory();
+    NSError *directoryError = nil;
+    if (![fm createDirectoryAtPath:directory
+       withIntermediateDirectories:YES
+                        attributes:@{NSFilePosixPermissions: @0700}
+                             error:&directoryError]) {
+        return NO;
+    }
+    if (![fm setAttributes:@{NSFilePosixPermissions: @0700}
+                    ofItemAtPath:directory
+                           error:nil]) {
+        return NO;
+    }
+    if (![root writeToFile:SessionStorePath() atomically:YES]) {
+        return NO;
+    }
+    return [fm setAttributes:@{NSFilePosixPermissions: @0600}
+                ofItemAtPath:SessionStorePath()
+                       error:nil];
 }
 
 + (nullable instancetype)loadSessionForAppleID:(NSString *)appleID {
-    NSString *path = SessionStorePath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    if (!dict) return nil;
-
-    NSString *storedAppleID = dict[@"appleID"];
-    if (appleID && ![storedAppleID isEqualToString:appleID]) return nil;
-
-    return [self sessionFromDict:dict];
+    if (appleID.length == 0) return nil;
+    NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
+    NSDictionary *accounts = [root[@"accounts"] isKindOfClass:NSDictionary.class]
+        ? root[@"accounts"]
+        : nil;
+    NSDictionary *session = [accounts[appleID] isKindOfClass:NSDictionary.class]
+        ? accounts[appleID]
+        : nil;
+    return session ? [self sessionFromDict:session] : nil;
 }
 
-+ (nullable instancetype)loadAnySession:(NSString *_Nullable *_Nullable)outAppleID {
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
-    if (!dict) return nil;
-    if (outAppleID) *outAppleID = dict[@"appleID"];
-    return [self sessionFromDict:dict];
++ (nullable instancetype)loadCurrentSession:(NSString *_Nullable *_Nullable)outAppleID {
+    NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
+    NSString *appleID = [root[@"currentAppleID"] isKindOfClass:NSString.class]
+        ? root[@"currentAppleID"]
+        : nil;
+    NSDictionary *accounts = [root[@"accounts"] isKindOfClass:NSDictionary.class]
+        ? root[@"accounts"]
+        : nil;
+    NSDictionary *session = appleID.length > 0 &&
+        [accounts[appleID] isKindOfClass:NSDictionary.class]
+            ? accounts[appleID]
+            : nil;
+    if (session == nil) return nil;
+    ALTAppleAPISession *result = [self sessionFromDict:session];
+    if (result != nil && outAppleID != NULL) {
+        *outAppleID = appleID;
+    }
+    return result;
 }
 
 + (nullable instancetype)sessionFromDict:(NSDictionary *)dict {
     NSDictionary *ad = dict[@"anisetteData"];
+    id expirationDate = dict[@"expirationDate"];
+    if (![dict[@"dsid"] isKindOfClass:NSString.class] ||
+        [dict[@"dsid"] length] == 0 ||
+        ![dict[@"authToken"] isKindOfClass:NSString.class] ||
+        [dict[@"authToken"] length] == 0 ||
+        ![ad isKindOfClass:NSDictionary.class] ||
+        (expirationDate != nil &&
+         ![expirationDate isKindOfClass:NSDate.class])) {
+        return nil;
+    }
+    for (NSString *key in @[
+        @"machineID", @"oneTimePassword", @"localUserID",
+        @"deviceUniqueIdentifier", @"deviceSerialNumber",
+        @"deviceDescription", @"locale", @"timeZone"
+    ]) {
+        id value = ad[key];
+        if (value != nil && ![value isKindOfClass:NSString.class]) {
+            return nil;
+        }
+    }
+    if ((ad[@"routingInfo"] != nil &&
+         ![ad[@"routingInfo"] isKindOfClass:NSNumber.class]) ||
+        (ad[@"date"] != nil &&
+         ![ad[@"date"] isKindOfClass:NSDate.class])) {
+        return nil;
+    }
     ALTAnisetteData *anisette = [[ALTAnisetteData alloc]
         initWithMachineID:ad[@"machineID"] ?: @""
           oneTimePassword:ad[@"oneTimePassword"] ?: @""
@@ -418,7 +486,7 @@ static NSString *Pending2FAStorePath(void) {
         initWithDSID:dict[@"dsid"] ?: @""
            authToken:dict[@"authToken"] ?: @""
         anisetteData:anisette];
-    session.expirationDate = dict[@"expirationDate"];
+    session.expirationDate = expirationDate;
     return session;
 }
 
@@ -731,7 +799,13 @@ static NSString *Pending2FAStorePath(void) {
                                                                                             authToken:authToken
                                                                                          anisetteData:anisetteData];
                                 session.expirationDate = expirationDate;
-                                [session saveForAppleID:appleID];
+                                if (![session saveForAppleID:appleID]) {
+                                    completion(nil, nil, SRPError(
+                                        kAltSignErrorCodeGeneric,
+                                        @"Could not persist the authenticated account"
+                                    ));
+                                    return;
+                                }
 
                                 NSLog(@"[SRP] Authentication successful, session saved (expires: %@)", expirationDate);
                                 completion(account, session, nil);
@@ -769,7 +843,13 @@ static NSString *Pending2FAStorePath(void) {
                                                                               authToken:authToken
                                                                            anisetteData:anisetteData];
                 session.expirationDate = expirationDate;
-                [session saveForAppleID:appleID];
+                if (![session saveForAppleID:appleID]) {
+                    completion(nil, nil, SRPError(
+                        kAltSignErrorCodeGeneric,
+                        @"Could not persist the authenticated account"
+                    ));
+                    return;
+                }
 
                 NSLog(@"[SRP] Authentication successful, session saved (expires: %@)", expirationDate);
                 completion(account, session, nil);
@@ -997,99 +1077,6 @@ static NSString *Pending2FAStorePath(void) {
     }];
 
     [validateTask resume];
-}
-
-+ (BOOL)hasPendingTwoFactorAuthentication {
-    NSString *path = Pending2FAStorePath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    if (!dict) return NO;
-    NSDate *date = dict[@"date"];
-    if (!date || -[date timeIntervalSinceNow] > 300) return NO;
-    return YES;
-}
-
-+ (void)submitPendingTwoFactorCode:(NSString *)code
-                          password:(NSString *)password
-                 completionHandler:(void (^)(ALTAccount * _Nullable account,
-                                            ALTAppleAPISession * _Nullable session,
-                                            NSError * _Nullable error))completion
-{
-    NSString *path = Pending2FAStorePath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    if (!dict) {
-        completion(nil, nil, SRPError(kAltSignErrorCode2FARequired, @"No pending two-factor authentication"));
-        return;
-    }
-    NSDate *date = dict[@"date"];
-    if (!date || -[date timeIntervalSinceNow] > 300) {
-        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-        completion(nil, nil, SRPError(kAltSignErrorCode2FARequired, @"Pending 2FA expired"));
-        return;
-    }
-
-    NSString *adsid = dict[@"adsid"];
-    NSString *idmsToken = dict[@"idmsToken"];
-    NSString *appleID = dict[@"appleID"];
-    NSDictionary *ad = dict[@"anisetteData"];
-    ALTAnisetteData *anisetteData = [[ALTAnisetteData alloc]
-        initWithMachineID:ad[@"machineID"] ?: @""
-          oneTimePassword:ad[@"oneTimePassword"] ?: @""
-              localUserID:ad[@"localUserID"] ?: @""
-              routingInfo:[ad[@"routingInfo"] integerValue]
-   deviceUniqueIdentifier:ad[@"deviceUniqueIdentifier"] ?: @""
-       deviceSerialNumber:ad[@"deviceSerialNumber"] ?: @""
-        deviceDescription:ad[@"deviceDescription"] ?: @""
-                     date:ad[@"date"] ?: [NSDate date]
-                   locale:ad[@"locale"] ?: @""
-                 timeZone:ad[@"timeZone"] ?: @""];
-
-    [self submitTwoFactorCode:code dsid:adsid idmsToken:idmsToken anisetteData:anisetteData
-            completionHandler:^(BOOL success, NSError * _Nullable error) {
-        if (!success) {
-            // Remove pending state on failure so user can trigger a new code
-            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-            completion(nil, nil, error ?: SRPError(kAltSignErrorCodeInvalid2FA, @"Incorrect verification code"));
-            return;
-        }
-
-        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-
-        NSData *sk = dict[@"sk"];
-        id requestC = dict[@"requestC"];
-        NSDictionary *cpd = dict[@"cpd"];
-        if (!sk || !requestC || !cpd) {
-            completion(nil, nil, SRPError(kAltSignErrorCodeGeneric, @"Missing session data. Please re-run without --2fa-code first."));
-            return;
-        }
-
-        NSLog(@"[SRP] 2FA validated, fetching auth token...");
-
-        [self fetchXcodeAuthTokenWithAdsid:adsid
-                                 idmsToken:idmsToken
-                                sessionKey:sk
-                                  requestC:requestC
-                                       cpd:cpd
-                              anisetteData:anisetteData
-                         completionHandler:^(NSString *authToken, NSDate *expirationDate, NSError *tokenError) {
-            if (tokenError || authToken.length == 0) {
-                completion(nil, nil, tokenError ?: SRPError(kAltSignErrorCodeGeneric, @"Empty auth token"));
-                return;
-            }
-
-            ALTAccount *account = [[ALTAccount alloc] init];
-            account.appleID = appleID;
-            account.identifier = adsid;
-
-            ALTAppleAPISession *session = [[ALTAppleAPISession alloc] initWithDSID:adsid
-                                                                        authToken:authToken
-                                                                     anisetteData:anisetteData];
-            session.expirationDate = expirationDate;
-            [session saveForAppleID:appleID];
-
-            NSLog(@"[SRP] Auth successful (expires: %@)", expirationDate);
-            completion(account, session, nil);
-        }];
-    }];
 }
 
 @end

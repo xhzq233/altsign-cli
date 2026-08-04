@@ -4,11 +4,12 @@
 //
 //  macOS 命令行自签名工具
 //  Usage:
-//    altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <path.ipa|path.app> [--output <path.ipa>]
-//    altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --app <path.app> [--output <path.ipa>]
-//    altsign-cli cert   --apple-id <email> --password <pwd>
+//    altsign-cli list   --apple-id <email>
+//    altsign-cli current-account
+//    altsign-cli sign   --udid <udid> --ipa <path.ipa|path.app> [--output <path.ipa>]
+//    altsign-cli sign   --udid <udid> --app <path.app> [--output <path.ipa>]
 //
-//  如需 2FA，会自动提示输入验证码（stdin），无需额外参数。
+//  首次认证的密码与 2FA 都直接从前台 /dev/tty 读取。
 
 #import <Foundation/Foundation.h>
 #import "anisette.h"
@@ -16,6 +17,12 @@
 #import "apple_api.h"
 #import "certificate_request.h"
 #import "signer.h"
+
+#include <readpassphrase.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // ============================================================
 // 辅助函数
@@ -83,17 +90,18 @@ static void printUsage(void) {
         "AltSign CLI — macOS IPA/.app 自签名工具\n"
         "\n"
         "用法:\n"
-        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --ipa <file.ipa|file.app> [--output <file.ipa>] [--entitlement <list>]\n"
-        "  altsign-cli sign   --apple-id <email> --password <pwd> --udid <udid> --app <file.app> [--output <file.ipa>] [--entitlement <list>]\n"
-        "  altsign-cli list   --apple-id <email> --password <pwd>\n"
+        "  altsign-cli list   --apple-id <email>\n"
+        "  altsign-cli current-account\n"
+        "  altsign-cli sign   --udid <udid> --ipa <file.ipa|file.app> [--output <file.ipa>] [--entitlement <list>]\n"
+        "  altsign-cli sign   --udid <udid> --app <file.app> [--output <file.ipa>] [--entitlement <list>]\n"
         "\n"
         "命令:\n"
-        "  sign   完整签名流程: 登录 → 拉证书 → 注册设备 → 创建PP → 重签IPA/.app\n"
-        "  list   登录后拉取开发证书 + App ID 列表（只读）\n"
+        "  list              选择/认证账号并列出开发证书与 App ID\n"
+        "  current-account   输出当前已认证账号（只读）\n"
+        "  sign              使用当前账号签名 IPA/.app\n"
         "\n"
         "选项:\n"
-        "  --apple-id      Apple ID 邮箱\n"
-        "  --password      Apple ID 密码\n"
+        "  --apple-id      list 要选择或认证的 Apple ID 邮箱\n"
         "  --udid          iOS 设备 UDID\n"
         "  --ipa           待签名的 IPA 或 .app 路径\n"
         "  --app           待签名的 .app 路径\n"
@@ -116,6 +124,53 @@ static NSString * _Nullable getArg(NSArray *args, NSString *flag) {
         return args[idx + 1];
     }
     return nil;
+}
+
+static BOOL hasFlag(NSArray *args, NSString *flag) {
+    return [args containsObject:flag];
+}
+
+static BOOL validateCommandOptions(NSArray<NSString *> *args,
+                                   NSString *command,
+                                   NSString **errorMessage) {
+    NSSet<NSString *> *valueOptions = [command isEqualToString:@"list"]
+        ? [NSSet setWithArray:@[@"--apple-id"]]
+        : [NSSet setWithArray:@[
+            @"--udid", @"--ipa", @"--app", @"--output", @"--entitlement"
+        ]];
+    NSSet<NSString *> *flagOptions = [NSSet setWithArray:@[@"--verbose"]];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSUInteger index = 2; index < args.count; index += 1) {
+        NSString *argument = args[index];
+        BOOL takesValue = [valueOptions containsObject:argument];
+        if (!takesValue && ![flagOptions containsObject:argument]) {
+            if (errorMessage != NULL) {
+                *errorMessage = [NSString stringWithFormat:
+                    @"unknown option for %@: %@", command, argument];
+            }
+            return NO;
+        }
+        if ([seen containsObject:argument]) {
+            if (errorMessage != NULL) {
+                *errorMessage = [NSString stringWithFormat:
+                    @"duplicate option: %@", argument];
+            }
+            return NO;
+        }
+        [seen addObject:argument];
+        if (takesValue) {
+            if (index + 1 >= args.count ||
+                [args[index + 1] hasPrefix:@"--"]) {
+                if (errorMessage != NULL) {
+                    *errorMessage = [NSString stringWithFormat:
+                        @"%@ requires a value", argument];
+                }
+                return NO;
+            }
+            index += 1;
+        }
+    }
+    return YES;
 }
 
 static BOOL isAppBundlePath(NSString *path) {
@@ -204,6 +259,70 @@ static NSArray<NSString *> * _Nullable extractBundleIDsFromIPA(NSString *ipaPath
 // 认证（含 session 复用 + 2FA）
 // ============================================================
 
+static NSError *AltSignCLIError(NSString *message) {
+    return [NSError errorWithDomain:@"com.altsign.cli"
+                               code:1
+                           userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+
+static void clearSensitiveBuffer(char *buffer, size_t length) {
+    volatile char *cursor = buffer;
+    while (length-- > 0) {
+        *cursor++ = 0;
+    }
+}
+
+static NSString * _Nullable readPasswordFromTTY(NSString *appleID,
+                                                  NSError **error) {
+    char password[4096] = {0};
+    NSString *prompt = [NSString stringWithFormat:
+        @"Apple ID password for %@: ", appleID];
+    errno = 0;
+    char *result = readpassphrase(
+        prompt.UTF8String,
+        password,
+        sizeof(password),
+        RPP_REQUIRE_TTY
+    );
+    if (result == NULL) {
+        if (error != NULL) {
+            NSString *reason = errno == ENOTTY
+                ? @"authentication requires a foreground terminal (/dev/tty)"
+                : [NSString stringWithFormat:
+                    @"could not read the password from /dev/tty: %s",
+                    strerror(errno)];
+            *error = AltSignCLIError(reason);
+        }
+        clearSensitiveBuffer(password, sizeof(password));
+        return nil;
+    }
+    NSString *value = [[NSString alloc] initWithUTF8String:password];
+    clearSensitiveBuffer(password, sizeof(password));
+    if (value.length == 0 && error != NULL) {
+        *error = AltSignCLIError(@"password was not provided");
+    }
+    return value.length > 0 ? value : nil;
+}
+
+static NSString * _Nullable readVerificationCodeFromTTY(void) {
+    FILE *tty = fopen("/dev/tty", "r+");
+    if (tty == NULL || !isatty(fileno(tty))) {
+        if (tty != NULL) fclose(tty);
+        return nil;
+    }
+    fprintf(tty, "2FA verification required. Enter code: ");
+    fflush(tty);
+    char buffer[64] = {0};
+    char *result = fgets(buffer, sizeof(buffer), tty);
+    fclose(tty);
+    if (result == NULL) return nil;
+    NSString *code = [[NSString alloc] initWithUTF8String:buffer];
+    NSString *trimmed = [code stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    clearSensitiveBuffer(buffer, sizeof(buffer));
+    return trimmed.length > 0 ? trimmed : nil;
+}
+
 static void authenticateWithAppleID(NSString *appleID, NSString *password,
                                     void (^completion)(ALTAccount * _Nullable, ALTAppleAPISession * _Nullable, NSError * _Nullable))
 {
@@ -217,6 +336,10 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
         if (cachedSession && !cachedSession.isExpired) {
             NSLog(@"[Auth] Reusing cached session (expires: %@)", cachedSession.expirationDate);
             cachedSession.anisetteData = anisetteData;
+            if (![cachedSession saveForAppleID:appleID]) {
+                completion(nil, nil, AltSignCLIError(@"could not select the cached account"));
+                return;
+            }
             ALTAccount *account = [[ALTAccount alloc] init];
             account.appleID = appleID;
             account.identifier = cachedSession.dsid;
@@ -227,16 +350,7 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
         NSLog(@"[Auth] Cached session missing or expired, performing SRP login...");
 
         ALTVerificationHandler verificationHandler = ^(void (^callback)(NSString * _Nullable code)) {
-            fprintf(stdout, "\n2FA verification required. Enter code: ");
-            fflush(stdout);
-            char buf[32];
-            if (fgets(buf, sizeof(buf), stdin)) {
-                NSString *code = [[NSString alloc] initWithUTF8String:buf];
-                code = [code stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                callback(code);
-            } else {
-                callback(nil);
-            }
+            callback(readVerificationCodeFromTTY());
         };
 
         [ALTSRPAuthenticator authenticateWithAppleID:appleID
@@ -251,17 +365,18 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
 // 核心流程
 // ============================================================
 
-static void performSign(NSString *appleID, NSString *password,
+static BOOL performSign(NSString *appleID, NSString *password,
                         NSString *udid, NSString *inputPath, NSString *outputPath,
                         NSArray<NSString *> *entitlementNames)
 {
     BOOL inputIsApp = isAppBundlePath(inputPath);
     if (!inputIsApp && !isIPAPath(inputPath)) {
         NSLog(@"[Error] Input must be an .ipa file or .app bundle: %@", inputPath);
-        return;
+        return NO;
     }
 
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block BOOL succeeded = NO;
 
     NSLog(@"========================================");
     NSLog(@" AltSign CLI — IPA/.app 自签名工具");
@@ -297,11 +412,21 @@ static void performSign(NSString *appleID, NSString *password,
             // Step 3: 获取证书
             NSLog(@"[Step 3] Fetching certificates...");
             [api fetchCertificatesForTeam:team session:session completionHandler:^(NSArray<ALTCertificate *> *certs, NSError *error) {
+                if (error) {
+                    NSLog(@"[Error] Failed to fetch certificates: %@", error);
+                    dispatch_semaphore_signal(sem);
+                    return;
+                }
 
                 void (^continueWithCert)(ALTCertificate *) = ^(ALTCertificate *cert) {
                     // Step 4: 注册设备
                     NSLog(@"[Step 4] Registering device: %@", udid);
                     [api registerDeviceWithName:@"AltSign Device" identifier:udid team:team session:session completionHandler:^(ALTDevice *device, NSError *error) {
+                        if (error || device == nil) {
+                            NSLog(@"[Error] Failed to register device: %@", error);
+                            dispatch_semaphore_signal(sem);
+                            return;
+                        }
                         NSLog(@"[Step 4] Device registered or already exists");
 
                         // Step 5: 提取所有需要签名的 bundle ID
@@ -336,6 +461,7 @@ static void performSign(NSString *appleID, NSString *password,
                                     if (success) {
                                         NSLog(@"✅ [Done] IPA signed successfully!");
                                         NSLog(@"   Output: %@", outputPath);
+                                        succeeded = YES;
                                     } else {
                                         NSLog(@"❌ [Error] Signing failed: %@", error);
                                     }
@@ -485,11 +611,13 @@ static void performSign(NSString *appleID, NSString *password,
     });
 
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    return succeeded;
 }
 
-static void performList(NSString *appleID, NSString *password)
+static BOOL performList(NSString *appleID, NSString *password)
 {
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block BOOL succeeded = NO;
 
     authenticateWithAppleID(appleID, password, ^(ALTAccount *account, ALTAppleAPISession *session, NSError *error) {
         if (error || !session) {
@@ -502,8 +630,8 @@ static void performList(NSString *appleID, NSString *password)
         ALTAppleAPI *api = [ALTAppleAPI sharedAPI];
         [api fetchTeamsForAccount:account session:session
                 completionHandler:^(NSArray<ALTTeam *> *teams, NSError *error) {
-            if (teams.count == 0) {
-                NSLog(@"No teams found");
+            if (error || teams.count == 0) {
+                NSLog(@"[Error] No teams found: %@", error);
                 dispatch_semaphore_signal(sem);
                 return;
             }
@@ -512,6 +640,11 @@ static void performList(NSString *appleID, NSString *password)
 
             [api fetchCertificatesForTeam:team session:session
                 completionHandler:^(NSArray<ALTCertificate *> *certs, NSError *error) {
+                if (error) {
+                    NSLog(@"[Error] Failed to fetch certificates: %@", error);
+                    dispatch_semaphore_signal(sem);
+                    return;
+                }
                 if (certs.count > 0) {
                     NSLog(@"");
                     NSLog(@"📜 Certificates (%lu):", (unsigned long)certs.count);
@@ -524,6 +657,11 @@ static void performList(NSString *appleID, NSString *password)
 
                 [api fetchAppIDsForTeam:team session:session
                     completionHandler:^(NSArray<ALTAppID *> *appIDs, NSError *error) {
+                    if (error) {
+                        NSLog(@"[Error] Failed to fetch App IDs: %@", error);
+                        dispatch_semaphore_signal(sem);
+                        return;
+                    }
                     if (appIDs.count > 0) {
                         NSLog(@"");
                         NSLog(@"📦 App IDs (%lu):", (unsigned long)appIDs.count);
@@ -533,6 +671,7 @@ static void performList(NSString *appleID, NSString *password)
                     } else {
                         NSLog(@"📦 No App IDs found.");
                     }
+                    succeeded = YES;
                     dispatch_semaphore_signal(sem);
                 }];
             }];
@@ -540,6 +679,7 @@ static void performList(NSString *appleID, NSString *password)
     });
 
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    return succeeded;
 }
 
 // ============================================================
@@ -548,6 +688,7 @@ static void performList(NSString *appleID, NSString *password)
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
+        umask(0077);
         NSArray *args = [[NSProcessInfo processInfo] arguments];
 
         if (args.count < 2) {
@@ -556,14 +697,92 @@ int main(int argc, const char * argv[]) {
         }
 
         NSString *command = args[1];
+        if ([command isEqualToString:@"--help"] ||
+            [command isEqualToString:@"-h"] ||
+            [command isEqualToString:@"help"]) {
+            printUsage();
+            return 0;
+        }
+        if (hasFlag(args, @"--password")) {
+            fprintf(stderr,
+                "Error: --password is not supported. Passwords are read securely from /dev/tty by `list --apple-id`.\n");
+            return 64;
+        }
+
+        if ([command isEqualToString:@"current-account"]) {
+            if (args.count != 2) {
+                fprintf(stderr, "Error: current-account does not accept options.\n");
+                return 64;
+            }
+            NSString *currentAppleID = nil;
+            ALTAppleAPISession *current =
+                [ALTAppleAPISession loadCurrentSession:&currentAppleID];
+            if (current == nil || current.isExpired || currentAppleID.length == 0) {
+                fprintf(stderr,
+                    "No current authenticated account. Run `altsign-cli list --apple-id '<Apple ID>'` in a terminal.\n");
+                return 2;
+            }
+            printf("%s\n", currentAppleID.UTF8String);
+            return 0;
+        }
+
+        if (![command isEqualToString:@"sign"] &&
+            ![command isEqualToString:@"list"]) {
+            fprintf(stderr, "Unknown command: %s\n\n", command.UTF8String);
+            printUsage();
+            return 64;
+        }
+
+        if ([command isEqualToString:@"sign"] &&
+            hasFlag(args, @"--apple-id")) {
+            fprintf(stderr,
+                "Error: sign uses the current account. Select it first with `altsign-cli list --apple-id '<Apple ID>'`.\n");
+            return 64;
+        }
+
+        NSString *optionError = nil;
+        if (!validateCommandOptions(args, command, &optionError)) {
+            fprintf(stderr, "Error: %s.\n", optionError.UTF8String);
+            return 64;
+        }
+
         NSString *appleID = getArg(args, @"--apple-id");
-        NSString *password = getArg(args, @"--password");
         NSString *udid = getArg(args, @"--udid");
         NSString *ipaPath = getArg(args, @"--ipa");
         NSString *appPath = getArg(args, @"--app");
         NSString *outputPath = getArg(args, @"--output");
         NSString *entitlementArg = getArg(args, @"--entitlement");
-        ALTVerboseLogging = (getArg(args, @"--verbose") != nil);
+        ALTVerboseLogging = hasFlag(args, @"--verbose");
+
+        if (hasFlag(args, @"--apple-id") && appleID.length == 0) {
+            fprintf(stderr, "Error: --apple-id requires a value.\n");
+            return 64;
+        }
+        NSString *password = nil;
+        if ([command isEqualToString:@"list"] && appleID.length > 0) {
+            ALTAppleAPISession *saved =
+                [ALTAppleAPISession loadSessionForAppleID:appleID];
+            if (saved == nil || saved.isExpired) {
+                NSError *passwordError = nil;
+                password = readPasswordFromTTY(appleID, &passwordError);
+                if (password.length == 0) {
+                    fprintf(stderr, "Error: %s\n",
+                        (passwordError.localizedDescription ?:
+                            @"password was not provided").UTF8String);
+                    return 2;
+                }
+            }
+        } else {
+            NSString *currentAppleID = nil;
+            ALTAppleAPISession *current =
+                [ALTAppleAPISession loadCurrentSession:&currentAppleID];
+            if (current == nil || current.isExpired || currentAppleID.length == 0) {
+                fprintf(stderr,
+                    "Error: no current authenticated account. Run `altsign-cli list --apple-id '<Apple ID>'` in a terminal.\n");
+                return 2;
+            }
+            appleID = currentAppleID;
+        }
 
         NSArray<NSString *> *entitlementNames = @[];
         if (entitlementArg.length > 0) {
@@ -582,20 +801,6 @@ int main(int argc, const char * argv[]) {
             entitlementNames = names;
         }
 
-        // 如果没提供 apple-id/password，尝试从已存 session 获取
-        if (!appleID || !password) {
-            NSString *storedAppleID = nil;
-            ALTAppleAPISession *existing = [ALTAppleAPISession loadAnySession:&storedAppleID];
-            if (existing && !existing.isExpired) {
-                if (!appleID) appleID = storedAppleID;
-                NSLog(@"[Auth] Using cached session for %@ (no credentials needed)", appleID);
-            } else if (!appleID || !password) {
-                fprintf(stderr, "Error: No cached session found. --apple-id and --password are required for first-time login.\n\n");
-                printUsage();
-                return 1;
-            }
-        }
-
         if ([command isEqualToString:@"sign"]) {
             if (ipaPath && appPath) {
                 fprintf(stderr, "Error: use either --ipa or --app, not both\n\n");
@@ -612,17 +817,19 @@ int main(int argc, const char * argv[]) {
                 NSString *base = [inputPath stringByDeletingPathExtension];
                 outputPath = [base stringByAppendingString:@"_signed.ipa"];
             }
-            performSign(appleID, password, udid, inputPath, outputPath, entitlementNames);
+            return performSign(
+                appleID,
+                nil,
+                udid,
+                inputPath,
+                outputPath,
+                entitlementNames
+            ) ? 0 : 1;
 
         } else if ([command isEqualToString:@"list"]) {
-            performList(appleID, password);
-
-        } else {
-            fprintf(stderr, "Unknown command: %s\n\n", command.UTF8String);
-            printUsage();
-            return 1;
+            return performList(appleID, password) ? 0 : 1;
         }
 
-        return 0;
+        return 64;
     }
 }

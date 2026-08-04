@@ -27,8 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 从本地 plist 加载 session（需匹配 appleID）
 + (nullable instancetype)loadSessionForAppleID:(NSString *)appleID;
 
-/// 加载任意可用的已存 session，通过 outAppleID 返回对应的 Apple ID
-+ (nullable instancetype)loadAnySession:(NSString *_Nullable *_Nullable)outAppleID;
+/// 加载明确选中的当前 session，通过 outAppleID 返回对应的 Apple ID
++ (nullable instancetype)loadCurrentSession:(NSString *_Nullable *_Nullable)outAppleID;
 
 /// 删除本地保存的 session
 + (void)deleteSession;
@@ -79,16 +79,6 @@ typedef void (^ALTVerificationHandler)(void (^ _Nonnull)(NSString * _Nullable ve
                   idmsToken:(NSString *)idmsToken
                anisetteData:(ALTAnisetteData *)anisetteData
           completionHandler:(void (^)(BOOL success, NSError * _Nullable error))completion;
-
-/// 检查是否存在待处理的 2FA 状态（5 分钟内有效）
-+ (BOOL)hasPendingTwoFactorAuthentication;
-
-/// 提交待处理 2FA 的验证码，验证成功后自动完成登录
-+ (void)submitPendingTwoFactorCode:(NSString *)code
-                          password:(NSString *)password
-                 completionHandler:(void (^)(ALTAccount * _Nullable account,
-                                            ALTAppleAPISession * _Nullable session,
-                                            NSError * _Nullable error))completion;
 
 @end
 

@@ -1,11 +1,20 @@
 # altsign-cli
 
-One command to sign any IPA or `.app` bundle with your free Apple ID. No jailbreak, no paid developer account, no Xcode project.
+Sign any IPA or `.app` bundle with your free Apple ID. No jailbreak, paid
+developer account, or Xcode project is required.
+
+Authenticate once as a standalone step. The password and any two-factor code
+are read from standard input. Password echo is disabled when standard input is
+a terminal, and the password is never accepted as a command argument:
+
+```bash
+./altsign-cli list --apple-id you@example.com
+```
+
+Then sign with the single cached session:
 
 ```bash
 ./altsign-cli sign \
-    --apple-id you@example.com \
-    --password 'your-password' \
     --udid 00000000-0000000000000000 \
     --ipa MyApp.ipa
 ```
@@ -14,21 +23,20 @@ For an `.app` bundle:
 
 ```bash
 ./altsign-cli sign \
-    --apple-id you@example.com \
-    --password 'your-password' \
     --udid 00000000-0000000000000000 \
     --app path/to/MyApp.app \
     --output MyApp_signed.ipa
 ```
 
-That's it. Authenticate, create certificates, register device, provision, package when needed, and sign — all in one shot.
+AltSign creates certificates, registers the device, provisions, packages when
+needed, and signs in one flow.
 
 ## Features
 
 - **Free Apple ID** — no $99/year membership needed
-- **Single command** — the entire signing pipeline runs end-to-end
+- **Single cached session** — log in with `list --apple-id`, then sign without credentials in argv
 - **IPA and `.app` input** — pass an IPA with `--ipa` or an app bundle with `--app`
-- **2FA built-in** — prompts for the code inline, no extra steps
+- **2FA built-in** — password and verification code use the same standard input
 - **Auto certificate management** — creates, persists, and rotates signing certificates automatically
 - **Multi-bundle** — handles `.appex` extensions in the IPA
 - **Capabilities** — enable HealthKit, App Groups, Push, etc. via `--entitlement`
@@ -53,8 +61,6 @@ Produces a single `./altsign-cli` binary.
 
 ```bash
 ./altsign-cli sign \
-    --apple-id you@example.com \
-    --password 'your-password' \
     --udid 00000000-0000000000000000 \
     --ipa MyApp.ipa
 ```
@@ -65,8 +71,6 @@ Output: `MyApp_signed.ipa` (or specify `--output path.ipa`).
 
 ```bash
 ./altsign-cli sign \
-    --apple-id you@example.com \
-    --password 'your-password' \
     --udid 00000000-0000000000000000 \
     --app path/to/MyApp.app \
     --output MyApp_signed.ipa
@@ -78,8 +82,6 @@ The tool packages the app into a temporary IPA, signs it, and writes a signed IP
 
 ```bash
 ./altsign-cli sign \
-    --apple-id you@example.com \
-    --password 'your-password' \
     --udid 00000000-0000000000000000 \
     --ipa MyApp.ipa \
     --entitlement healthkit,app-groups
@@ -88,7 +90,7 @@ The tool packages the app into a temporary IPA, signs it, and writes a signed IP
 ### List certificates and App IDs
 
 ```bash
-./altsign-cli list --apple-id you@example.com --password 'your-password'
+./altsign-cli list --apple-id you@example.com
 ```
 
 ### 2FA
@@ -105,8 +107,7 @@ Enter the 6-digit code from your trusted device. Done.
 
 | Flag | Command | Description |
 |------|---------|-------------|
-| `--apple-id <email>` | all | Apple ID email |
-| `--password <pwd>` | all | Apple ID password |
+| `--apple-id <email>` | list | Authenticate an Apple ID and replace the cached session |
 | `--udid <id>` | sign | Target device UDID |
 | `--ipa <path>` | sign | Input IPA file, or an `.app` bundle for compatibility |
 | `--app <path>` | sign | Input `.app` bundle |

@@ -20,15 +20,15 @@ run_with_home() {
 }
 
 if run_with_home current-account >"$TEST_HOME/current.out" 2>"$TEST_HOME/current.err"; then
-  echo "[altsign-test] missing current account unexpectedly succeeded" >&2
+  echo "[altsign-test] removed current-account command unexpectedly succeeded" >&2
   exit 1
 fi
-if ! /usr/bin/grep -q "No current authenticated account" "$TEST_HOME/current.err"; then
-  echo "[altsign-test] missing-current remediation is absent" >&2
+if ! /usr/bin/grep -q "Unknown command: current-account" "$TEST_HOME/current.err"; then
+  echo "[altsign-test] removed current-account command is still recognized" >&2
   exit 1
 fi
 if [[ -e "$TEST_HOME/Library/Application Support/altsign" ]]; then
-  echo "[altsign-test] read-only current-account created session storage" >&2
+  echo "[altsign-test] invalid command created session storage" >&2
   exit 1
 fi
 
@@ -84,17 +84,27 @@ if ! /usr/bin/grep -q -- "--apple-id requires a value" "$TEST_HOME/option-value.
 fi
 
 start_seconds="$SECONDS"
-if run_with_home list --apple-id contract@example.invalid \
+if run_with_home list --apple-id contract@example.invalid </dev/null \
     >"$TEST_HOME/no-tty.out" 2>"$TEST_HOME/no-tty.err"; then
-  echo "[altsign-test] first authentication without a TTY unexpectedly succeeded" >&2
+  echo "[altsign-test] EOF on standard input unexpectedly succeeded" >&2
   exit 1
 fi
 if (( SECONDS - start_seconds > 2 )); then
   echo "[altsign-test] no-TTY authentication did not fail quickly" >&2
   exit 1
 fi
-if ! /usr/bin/grep -q "foreground terminal" "$TEST_HOME/no-tty.err"; then
-  echo "[altsign-test] no-TTY remediation is absent" >&2
+if ! /usr/bin/grep -Eq "standard input|password was not provided" "$TEST_HOME/no-tty.err"; then
+  echo "[altsign-test] stdin EOF error is unclear" >&2
+  exit 1
+fi
+
+if /usr/bin/printf '\n' | run_with_home list --apple-id contract@example.invalid \
+    >"$TEST_HOME/pipe.out" 2>"$TEST_HOME/pipe.err"; then
+  echo "[altsign-test] empty piped password unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -q "password was not provided" "$TEST_HOME/pipe.err"; then
+  echo "[altsign-test] piped stdin did not use the password reader" >&2
   exit 1
 fi
 
@@ -107,8 +117,8 @@ import plistlib
 import sys
 
 path = sys.argv[1]
-account = "selected@example.invalid"
 session = {
+    "appleID": "single@example.invalid",
     "dsid": "12345",
     "authToken": "test-token",
     "expirationDate": datetime.datetime.now(datetime.timezone.utc)
@@ -116,19 +126,17 @@ session = {
     "anisetteData": {},
 }
 with open(path, "wb") as stream:
-    plistlib.dump({
-        "currentAppleID": account,
-        "accounts": {
-            "other@example.invalid": dict(session),
-            account: dict(session),
-        },
-    }, stream)
+    plistlib.dump(session, stream)
 PY
 /bin/chmod 600 "$SESSION_DIR/session.plist"
 
-current="$(run_with_home current-account)"
-if [[ "$current" != "selected@example.invalid" ]]; then
-  echo "[altsign-test] current-account ignored the explicit selection: $current" >&2
+if run_with_home sign --udid test \
+    >"$TEST_HOME/single.out" 2>"$TEST_HOME/single.err"; then
+  echo "[altsign-test] incomplete sign unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -q -- "--udid and one of --ipa/--app are required" "$TEST_HOME/single.err"; then
+  echo "[altsign-test] sign did not load the single cached session" >&2
   exit 1
 fi
 
@@ -145,14 +153,18 @@ import sys
 path = sys.argv[1]
 with open(path, "rb") as stream:
     root = plistlib.load(stream)
-root["accounts"][root["currentAppleID"]]["expirationDate"] = "not-a-date"
+root["expirationDate"] = "not-a-date"
 with open(path, "wb") as stream:
     plistlib.dump(root, stream)
 PY
 /bin/chmod 600 "$SESSION_DIR/session.plist"
-if run_with_home current-account \
+if run_with_home sign --udid test \
     >"$TEST_HOME/malformed.out" 2>"$TEST_HOME/malformed.err"; then
-  echo "[altsign-test] malformed current account unexpectedly succeeded" >&2
+  echo "[altsign-test] malformed cached session unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -q "no valid cached session" "$TEST_HOME/malformed.err"; then
+  echo "[altsign-test] malformed session error is unclear" >&2
   exit 1
 fi
 

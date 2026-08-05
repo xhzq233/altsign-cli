@@ -24,11 +24,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// 保存 session 到本地 plist
 - (BOOL)saveForAppleID:(NSString *)appleID;
 
-/// 从本地 plist 加载 session（需匹配 appleID）
-+ (nullable instancetype)loadSessionForAppleID:(NSString *)appleID;
-
-/// 加载明确选中的当前 session，通过 outAppleID 返回对应的 Apple ID
-+ (nullable instancetype)loadCurrentSession:(NSString *_Nullable *_Nullable)outAppleID;
+/// 加载单一缓存 session，通过 outAppleID 返回对应的 Apple ID
++ (nullable instancetype)loadSession:(NSString *_Nullable *_Nullable)outAppleID;
 
 /// 删除本地保存的 session
 + (void)deleteSession;

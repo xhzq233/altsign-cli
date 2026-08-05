@@ -3,14 +3,15 @@
 Sign any IPA or `.app` bundle with your free Apple ID. No jailbreak, paid
 developer account, or Xcode project is required.
 
-Authenticate once in a foreground terminal. The password is read with terminal
-echo disabled and is never accepted as a command argument:
+Authenticate once as a standalone step. The password and any two-factor code
+are read from standard input. Password echo is disabled when standard input is
+a terminal, and the password is never accepted as a command argument:
 
 ```bash
 ./altsign-cli list --apple-id you@example.com
 ```
 
-Then sign with the selected current account:
+Then sign with the single cached session:
 
 ```bash
 ./altsign-cli sign \
@@ -33,9 +34,9 @@ needed, and signs in one flow.
 ## Features
 
 - **Free Apple ID** — no $99/year membership needed
-- **Explicit current account** — switch accounts with `list --apple-id`, then sign without credentials in argv
+- **Single cached session** — log in with `list --apple-id`, then sign without credentials in argv
 - **IPA and `.app` input** — pass an IPA with `--ipa` or an app bundle with `--app`
-- **2FA built-in** — password and verification prompts use the foreground terminal
+- **2FA built-in** — password and verification code use the same standard input
 - **Auto certificate management** — creates, persists, and rotates signing certificates automatically
 - **Multi-bundle** — handles `.appex` extensions in the IPA
 - **Capabilities** — enable HealthKit, App Groups, Push, etc. via `--entitlement`
@@ -92,12 +93,6 @@ The tool packages the app into a temporary IPA, signs it, and writes a signed IP
 ./altsign-cli list --apple-id you@example.com
 ```
 
-Show the account that `sign` will use:
-
-```bash
-./altsign-cli current-account
-```
-
 ### 2FA
 
 When needed, the tool prompts:
@@ -112,7 +107,7 @@ Enter the 6-digit code from your trusted device. Done.
 
 | Flag | Command | Description |
 |------|---------|-------------|
-| `--apple-id <email>` | list | Select or authenticate an Apple ID |
+| `--apple-id <email>` | list | Authenticate an Apple ID and replace the cached session |
 | `--udid <id>` | sign | Target device UDID |
 | `--ipa <path>` | sign | Input IPA file, or an `.app` bundle for compatibility |
 | `--app <path>` | sign | Input `.app` bundle |

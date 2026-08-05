@@ -5,11 +5,10 @@
 //  macOS 命令行自签名工具
 //  Usage:
 //    altsign-cli list   --apple-id <email>
-//    altsign-cli current-account
 //    altsign-cli sign   --udid <udid> --ipa <path.ipa|path.app> [--output <path.ipa>]
 //    altsign-cli sign   --udid <udid> --app <path.app> [--output <path.ipa>]
 //
-//  首次认证的密码与 2FA 都直接从前台 /dev/tty 读取。
+//  首次认证的密码与 2FA 都从标准输入读取。
 
 #import <Foundation/Foundation.h>
 #import "anisette.h"
@@ -91,17 +90,18 @@ static void printUsage(void) {
         "\n"
         "用法:\n"
         "  altsign-cli list   --apple-id <email>\n"
-        "  altsign-cli current-account\n"
         "  altsign-cli sign   --udid <udid> --ipa <file.ipa|file.app> [--output <file.ipa>] [--entitlement <list>]\n"
         "  altsign-cli sign   --udid <udid> --app <file.app> [--output <file.ipa>] [--entitlement <list>]\n"
         "\n"
         "命令:\n"
-        "  list              选择/认证账号并列出开发证书与 App ID\n"
-        "  current-account   输出当前已认证账号（只读）\n"
-        "  sign              使用当前账号签名 IPA/.app\n"
+        "  list   独立登录并列出开发证书与 App ID\n"
+        "  sign   使用单一缓存 session 签名 IPA/.app\n"
+        "\n"
+        "认证输入:\n"
+        "  list --apple-id 从标准输入读取密码和 2FA；终端密码不回显\n"
         "\n"
         "选项:\n"
-        "  --apple-id      list 要选择或认证的 Apple ID 邮箱\n"
+        "  --apple-id      list 要认证的 Apple ID 邮箱\n"
         "  --udid          iOS 设备 UDID\n"
         "  --ipa           待签名的 IPA 或 .app 路径\n"
         "  --app           待签名的 .app 路径\n"
@@ -272,24 +272,27 @@ static void clearSensitiveBuffer(char *buffer, size_t length) {
     }
 }
 
-static NSString * _Nullable readPasswordFromTTY(NSString *appleID,
-                                                  NSError **error) {
+static NSString * _Nullable readPasswordFromStandardInput(
+    NSString *appleID,
+    NSError **error
+) {
     char password[4096] = {0};
     NSString *prompt = [NSString stringWithFormat:
         @"Apple ID password for %@: ", appleID];
+    int flags = isatty(STDIN_FILENO) ? RPP_REQUIRE_TTY : RPP_STDIN;
     errno = 0;
     char *result = readpassphrase(
         prompt.UTF8String,
         password,
         sizeof(password),
-        RPP_REQUIRE_TTY
+        flags
     );
     if (result == NULL) {
         if (error != NULL) {
-            NSString *reason = errno == ENOTTY
-                ? @"authentication requires a foreground terminal (/dev/tty)"
+            NSString *reason = errno == 0
+                ? @"password was not provided"
                 : [NSString stringWithFormat:
-                    @"could not read the password from /dev/tty: %s",
+                    @"could not read the password from standard input: %s",
                     strerror(errno)];
             *error = AltSignCLIError(reason);
         }
@@ -304,17 +307,11 @@ static NSString * _Nullable readPasswordFromTTY(NSString *appleID,
     return value.length > 0 ? value : nil;
 }
 
-static NSString * _Nullable readVerificationCodeFromTTY(void) {
-    FILE *tty = fopen("/dev/tty", "r+");
-    if (tty == NULL || !isatty(fileno(tty))) {
-        if (tty != NULL) fclose(tty);
-        return nil;
-    }
-    fprintf(tty, "2FA verification required. Enter code: ");
-    fflush(tty);
+static NSString * _Nullable readVerificationCodeFromStandardInput(void) {
+    fprintf(stderr, "2FA verification required. Enter code: ");
+    fflush(stderr);
     char buffer[64] = {0};
-    char *result = fgets(buffer, sizeof(buffer), tty);
-    fclose(tty);
+    char *result = fgets(buffer, sizeof(buffer), stdin);
     if (result == NULL) return nil;
     NSString *code = [[NSString alloc] initWithUTF8String:buffer];
     NSString *trimmed = [code stringByTrimmingCharactersInSet:
@@ -332,14 +329,13 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
             return;
         }
 
-        ALTAppleAPISession *cachedSession = [ALTAppleAPISession loadSessionForAppleID:appleID];
-        if (cachedSession && !cachedSession.isExpired) {
+        NSString *cachedAppleID = nil;
+        ALTAppleAPISession *cachedSession =
+            [ALTAppleAPISession loadSession:&cachedAppleID];
+        if ([cachedAppleID isEqualToString:appleID] &&
+            cachedSession && !cachedSession.isExpired) {
             NSLog(@"[Auth] Reusing cached session (expires: %@)", cachedSession.expirationDate);
             cachedSession.anisetteData = anisetteData;
-            if (![cachedSession saveForAppleID:appleID]) {
-                completion(nil, nil, AltSignCLIError(@"could not select the cached account"));
-                return;
-            }
             ALTAccount *account = [[ALTAccount alloc] init];
             account.appleID = appleID;
             account.identifier = cachedSession.dsid;
@@ -350,7 +346,7 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
         NSLog(@"[Auth] Cached session missing or expired, performing SRP login...");
 
         ALTVerificationHandler verificationHandler = ^(void (^callback)(NSString * _Nullable code)) {
-            callback(readVerificationCodeFromTTY());
+            callback(readVerificationCodeFromStandardInput());
         };
 
         [ALTSRPAuthenticator authenticateWithAppleID:appleID
@@ -705,25 +701,8 @@ int main(int argc, const char * argv[]) {
         }
         if (hasFlag(args, @"--password")) {
             fprintf(stderr,
-                "Error: --password is not supported. Passwords are read securely from /dev/tty by `list --apple-id`.\n");
+                "Error: --password is not supported. `list --apple-id` reads the password from standard input.\n");
             return 64;
-        }
-
-        if ([command isEqualToString:@"current-account"]) {
-            if (args.count != 2) {
-                fprintf(stderr, "Error: current-account does not accept options.\n");
-                return 64;
-            }
-            NSString *currentAppleID = nil;
-            ALTAppleAPISession *current =
-                [ALTAppleAPISession loadCurrentSession:&currentAppleID];
-            if (current == nil || current.isExpired || currentAppleID.length == 0) {
-                fprintf(stderr,
-                    "No current authenticated account. Run `altsign-cli list --apple-id '<Apple ID>'` in a terminal.\n");
-                return 2;
-            }
-            printf("%s\n", currentAppleID.UTF8String);
-            return 0;
         }
 
         if (![command isEqualToString:@"sign"] &&
@@ -736,7 +715,7 @@ int main(int argc, const char * argv[]) {
         if ([command isEqualToString:@"sign"] &&
             hasFlag(args, @"--apple-id")) {
             fprintf(stderr,
-                "Error: sign uses the current account. Select it first with `altsign-cli list --apple-id '<Apple ID>'`.\n");
+                "Error: sign uses the cached session. Authenticate separately with `altsign-cli list --apple-id '<Apple ID>'`.\n");
             return 64;
         }
 
@@ -760,11 +739,16 @@ int main(int argc, const char * argv[]) {
         }
         NSString *password = nil;
         if ([command isEqualToString:@"list"] && appleID.length > 0) {
-            ALTAppleAPISession *saved =
-                [ALTAppleAPISession loadSessionForAppleID:appleID];
-            if (saved == nil || saved.isExpired) {
+            NSString *cachedAppleID = nil;
+            ALTAppleAPISession *cached =
+                [ALTAppleAPISession loadSession:&cachedAppleID];
+            if (![cachedAppleID isEqualToString:appleID] ||
+                cached == nil || cached.isExpired) {
                 NSError *passwordError = nil;
-                password = readPasswordFromTTY(appleID, &passwordError);
+                password = readPasswordFromStandardInput(
+                    appleID,
+                    &passwordError
+                );
                 if (password.length == 0) {
                     fprintf(stderr, "Error: %s\n",
                         (passwordError.localizedDescription ?:
@@ -773,15 +757,15 @@ int main(int argc, const char * argv[]) {
                 }
             }
         } else {
-            NSString *currentAppleID = nil;
-            ALTAppleAPISession *current =
-                [ALTAppleAPISession loadCurrentSession:&currentAppleID];
-            if (current == nil || current.isExpired || currentAppleID.length == 0) {
+            NSString *cachedAppleID = nil;
+            ALTAppleAPISession *cached =
+                [ALTAppleAPISession loadSession:&cachedAppleID];
+            if (cached == nil || cached.isExpired || cachedAppleID.length == 0) {
                 fprintf(stderr,
-                    "Error: no current authenticated account. Run `altsign-cli list --apple-id '<Apple ID>'` in a terminal.\n");
+                    "Error: no valid cached session. Run `altsign-cli list --apple-id '<Apple ID>'` first.\n");
                 return 2;
             }
-            appleID = currentAppleID;
+            appleID = cachedAppleID;
         }
 
         NSArray<NSString *> *entitlementNames = @[];

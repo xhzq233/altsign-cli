@@ -358,6 +358,7 @@ static NSString *SessionStorePath(void) {
     }
 
     NSMutableDictionary *session = [NSMutableDictionary dictionary];
+    session[@"appleID"] = appleID;
     session[@"dsid"] = self.dsid;
     session[@"authToken"] = self.authToken;
     if (self.expirationDate) {
@@ -368,7 +369,7 @@ static NSString *SessionStorePath(void) {
     anisette[@"machineID"] = self.anisetteData.machineID ?: @"";
     anisette[@"oneTimePassword"] = self.anisetteData.oneTimePassword ?: @"";
     anisette[@"localUserID"] = self.anisetteData.localUserID ?: @"";
-    anisette[@"routingInfo"] = [@(self.anisetteData.routingInfo) description];
+    anisette[@"routingInfo"] = @(self.anisetteData.routingInfo);
     anisette[@"deviceUniqueIdentifier"] = self.anisetteData.deviceUniqueIdentifier ?: @"";
     anisette[@"deviceSerialNumber"] = self.anisetteData.deviceSerialNumber ?: @"";
     anisette[@"deviceDescription"] = self.anisetteData.deviceDescription ?: @"";
@@ -376,17 +377,6 @@ static NSString *SessionStorePath(void) {
     anisette[@"locale"] = self.anisetteData.locale ?: @"";
     anisette[@"timeZone"] = self.anisetteData.timeZone ?: @"";
     session[@"anisetteData"] = anisette;
-
-    NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
-    NSDictionary *storedAccounts = [stored[@"accounts"] isKindOfClass:NSDictionary.class]
-        ? stored[@"accounts"]
-        : @{};
-    NSMutableDictionary *accounts = [storedAccounts mutableCopy];
-    accounts[appleID] = session;
-    NSDictionary *root = @{
-        @"currentAppleID": appleID,
-        @"accounts": accounts,
-    };
 
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *directory = SessionStoreDirectory();
@@ -402,7 +392,7 @@ static NSString *SessionStorePath(void) {
                            error:nil]) {
         return NO;
     }
-    if (![root writeToFile:SessionStorePath() atomically:YES]) {
+    if (![session writeToFile:SessionStorePath() atomically:YES]) {
         return NO;
     }
     return [fm setAttributes:@{NSFilePosixPermissions: @0600}
@@ -410,31 +400,13 @@ static NSString *SessionStorePath(void) {
                        error:nil];
 }
 
-+ (nullable instancetype)loadSessionForAppleID:(NSString *)appleID {
++ (nullable instancetype)loadSession:(NSString *_Nullable *_Nullable)outAppleID {
+    NSDictionary *session =
+        [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
+    NSString *appleID = [session[@"appleID"] isKindOfClass:NSString.class]
+        ? session[@"appleID"]
+        : nil;
     if (appleID.length == 0) return nil;
-    NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
-    NSDictionary *accounts = [root[@"accounts"] isKindOfClass:NSDictionary.class]
-        ? root[@"accounts"]
-        : nil;
-    NSDictionary *session = [accounts[appleID] isKindOfClass:NSDictionary.class]
-        ? accounts[appleID]
-        : nil;
-    return session ? [self sessionFromDict:session] : nil;
-}
-
-+ (nullable instancetype)loadCurrentSession:(NSString *_Nullable *_Nullable)outAppleID {
-    NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:SessionStorePath()];
-    NSString *appleID = [root[@"currentAppleID"] isKindOfClass:NSString.class]
-        ? root[@"currentAppleID"]
-        : nil;
-    NSDictionary *accounts = [root[@"accounts"] isKindOfClass:NSDictionary.class]
-        ? root[@"accounts"]
-        : nil;
-    NSDictionary *session = appleID.length > 0 &&
-        [accounts[appleID] isKindOfClass:NSDictionary.class]
-            ? accounts[appleID]
-            : nil;
-    if (session == nil) return nil;
     ALTAppleAPISession *result = [self sessionFromDict:session];
     if (result != nil && outAppleID != NULL) {
         *outAppleID = appleID;

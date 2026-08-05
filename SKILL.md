@@ -18,17 +18,17 @@ Use `altsign-cli` to sign iOS apps for physical-device installation. It accepts 
 ./build.sh
 ```
 
-Authenticate and select an account once from a foreground terminal:
+Authenticate once as a standalone step:
 
 ```bash
 ./altsign-cli list --apple-id 'you@example.com'
 ```
 
-The CLI reads the password privately from the terminal and requests the
-trusted-device code there when Apple requires 2FA. Never put either secret in
-arguments, environment variables, scripts, or logs. Later signing commands use
-the explicitly selected account without credential arguments. Use
-`./altsign-cli current-account` to check that selection.
+The CLI reads the password and any trusted-device code from standard input.
+When standard input is a terminal, password echo is disabled and restored.
+Never put either secret in arguments, environment variables, scripts, or logs.
+Later signing commands use the single cached session without credential
+arguments; logging in with another Apple ID replaces that session.
 
 ## Sign An IPA
 
@@ -62,9 +62,9 @@ Before reinstalling the same bundle, terminate the app and avoid leaving an old 
 
 ## Failure Handling
 
-- No current account or an expired session: run
-  `./altsign-cli list --apple-id '<Apple ID>'` in a foreground terminal.
-- Password or 2FA prompt: let the user enter it directly in that terminal; do
+- No valid cached session: run
+  `./altsign-cli list --apple-id '<Apple ID>'` as a separate login step.
+- Password or 2FA prompt: let the user enter it through standard input; do
   not ask them to paste it into chat, and do not guess or store it.
 - HTTP 4xx from Apple: usually account, certificate, App ID, device registration, or capability eligibility.
 - HTTP 5xx or anisette errors: check network/VPN and retry only after identifying the cause.

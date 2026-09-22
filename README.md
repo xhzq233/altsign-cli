@@ -11,8 +11,8 @@ a terminal, and the password is never accepted as a command argument:
 ./altsign-cli list --apple-id you@example.com
 ```
 
-Then sign with the single cached session. For an account with multiple teams,
-pass `--team-id` explicitly (see team selection below):
+Then sign with the single cached session. By default, the first team returned
+by Apple is used; pass `--team-id` to select another team:
 
 ```bash
 ./altsign-cli sign \
@@ -109,21 +109,21 @@ names and messages supplied by Apple are displayed as returned.
 ./altsign-cli list --team-id ABCDE12345       # inspect one team's resources
 ```
 
-Without `--team-id`, `list` displays every team's name, ID and type. With one
-team, it also lists that team's certificates and App IDs. With multiple teams,
-it stops after the team list; use `--team-id` to query a particular team's
-resources. Team type alone does not establish paid membership.
+Without `--team-id`, `list` displays every team's name, ID and type, then
+queries certificates and App IDs for the first team returned by Apple.
+`sign` also defaults to the first returned team, preserving the original
+selection behavior. Team type alone does not establish paid membership.
 
-`sign` automatically selects a team only when exactly one is available.
-Multiple teams require an explicit ID:
+Use an explicit ID to select another team for either command:
 
 ```bash
 ./altsign-cli sign --team-id ABCDE12345 --udid DEVICE_ID --ipa MyApp.ipa
 ```
 
-An unknown ID or an omitted ID with multiple teams prints the available teams
-and fails before certificate/device changes. Selection never falls back to the
-first team or prefers paid membership. It is per command, not saved by `list`.
+An unknown explicit ID prints the available teams and fails before
+certificate/device changes; it never falls back to another team. Selection is
+per command, not saved by `list`, and does not prefer paid membership. Apple's
+team order can change between calls; use an explicit ID for a consistent choice.
 The selected team's name, ID and type are shown before signing operations.
 Existing signing behavior can revoke a certificate if its private key is not
 available locally; use the intended team's keys when signing.
@@ -144,7 +144,7 @@ Enter the 6-digit code from your trusted device. Done.
 | Flag | Command | Description |
 |------|---------|-------------|
 | `--apple-id <email>` | list | Reuse this account’s valid session or authenticate; a successful new login replaces the cached account |
-| `--team-id <id>` | list, sign | Select a team; required for signing with multiple teams |
+| `--team-id <id>` | list, sign | Select a team; omission uses the first team returned by Apple |
 | `--udid <id>` | sign | Target device UDID |
 | `--ipa <path>` | sign | Input IPA file, or an `.app` bundle for compatibility |
 | `--app <path>` | sign | Input `.app` bundle |

@@ -89,8 +89,8 @@ static void printCommandHelp(NSString *command) {
             "  --apple-id <email>  Log in, or reuse this account's valid cached session.\n"
             "                     Omit to use the single cached account.\n"
             "  --team-id <id>      Inspect this team's certificates and App IDs.\n"
-            "                     Omit to show all teams; also inspect resources if\n"
-            "                     exactly one team exists.\n"
+            "                     Omit to show all teams and inspect resources for\n"
+            "                     the first team returned by Apple.\n"
             "\n"
             "Examples:\n"
             "  altsign-cli list --apple-id 'you@example.com'\n"
@@ -107,8 +107,8 @@ static void printCommandHelp(NSString *command) {
             "  --udid <id>         Target device UDID.\n"
             "  --ipa <path>        Input IPA (.app also accepted for compatibility).\n"
             "  --app <path>        Input .app bundle; mutually exclusive with --ipa.\n"
-            "  --team-id <id>      Required when the account has multiple teams.\n"
-            "                     With one team, omission selects it automatically.\n"
+            "  --team-id <id>      Select a team; defaults to the first team returned\n"
+            "                     by Apple, including accounts with multiple teams.\n"
             "  --output <path>     Signed IPA; default: <input>_signed.ipa.\n"
             "  --entitlement <names>  Enable comma-separated capabilities.\n"
             "\n"
@@ -419,12 +419,12 @@ static ALTTeam *selectTeam(NSArray<ALTTeam *> *teams, NSString *teamID) {
         }
         fprintf(stderr, "Error: team '%s' is not available to this account.\n", teamID.UTF8String);
         ALTDiagnosticsEvent(@"team.not_found", 1);
-    } else if (teams.count == 1) {
+    } else if (teams.count > 0) {
         ALTDiagnosticsEvent(@"team.automatic", 0);
         return teams.firstObject;
     } else {
-        fprintf(stderr, "Error: multiple teams are available; specify --team-id <id>.\n");
-        ALTDiagnosticsEvent(@"team.selection_required", 1);
+        fprintf(stderr, "Error: no teams are available.\n");
+        ALTDiagnosticsEvent(@"team.none", 1);
     }
     printTeams(teams);
     return nil;
@@ -713,12 +713,6 @@ static BOOL performList(NSString *appleID, NSString *password, NSString *teamID)
             }
             if (!teamID) {
                 printTeams(teams);
-                if (teams.count > 1) {
-                    fprintf(stdout, "Use list --team-id <id> to inspect a team's certificates and App IDs.\n");
-                    succeeded = YES;
-                    dispatch_semaphore_signal(sem);
-                    return;
-                }
             }
             ALTTeam *team = selectTeam(teams, teamID);
             if (!team) {

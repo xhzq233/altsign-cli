@@ -34,8 +34,8 @@ arguments; logging in with another Apple ID replaces that session.
 
 Run `./altsign-cli list` to list every team using the cached account. Use
 `./altsign-cli list --team-id TEAM_ID` to inspect a specific team's certificates
-and App IDs. A single team is selected automatically; signing with multiple
-teams requires `--team-id TEAM_ID`. Pass it on every signing command: selection
+and App IDs. Without `--team-id`, both commands use the first team returned by
+Apple, even for multi-team accounts. Pass an ID for a consistent choice: selection
 is not saved by `list`, and an unknown ID fails rather than choosing another team.
 
 Use `./altsign-cli list --help` or `./altsign-cli sign --help` for command-specific
@@ -77,7 +77,7 @@ Before reinstalling the same bundle, terminate the app and avoid leaving an old 
   `./altsign-cli list --apple-id '<Apple ID>'` as a separate login step.
 - Password or 2FA prompt: let the user enter it through standard input; do
   not ask them to paste it into chat, and do not guess or store it.
-- Multiple teams or unknown team ID: run `list`, choose the intended ID, and
+- To select another team or resolve an unknown team ID, run `list` and
   pass `--team-id` to `sign` before allowing certificate/device changes.
 - On failure, the CLI prints a `Diagnostics (exit code ...): ...log` path.
   Share that structured log for support; terminal/verbose output and session

@@ -18,7 +18,7 @@ static NSString *const kGSAEndpoint = @"https://gsa.apple.com/grandslam/GsServic
 static NSString *const kGSA2FARequest = @"https://gsa.apple.com/auth/verify/trusteddevice";
 static NSString *const kGSA2FAValidate = @"https://gsa.apple.com/grandslam/GsService2/validate";
 
-static NSString *const kGSAUserAgent = @"akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0";
+static NSString *const kGSAUserAgent = @"AuthKit/1 (Macintosh; OS X 26.5.2) (com.apple.dt.Xcode/26.0)";
 static NSString *const kGSA2FAUserAgent = @"Xcode";
 static NSString *const kGSAXcodeVersion = @"26.0 (17A324)";
 
@@ -255,6 +255,7 @@ static void SendGSARequest(NSDictionary *requestDict,
 
     [request setValue:@"text/x-xml-plist" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
+    [request setValue:kGSAUserAgent forHTTPHeaderField:@"User-Agent"];
     [request setValue:anisetteData.deviceDescription forHTTPHeaderField:@"X-MMe-Client-Info"];
 
     if (extraHeaders) {

@@ -70,51 +70,84 @@ static NSDictionary<NSString *, NSString *> *capabilityFeatureMap(void) {
 
 static void printCapabilities(void) {
     fprintf(stderr,
-        "可用的 --entitlement 名称:\n"
-        "  app-groups           应用组 (com.apple.security.application-groups)\n"
-        "  healthkit            HealthKit\n"
-        "  push                 远程推送\n"
-        "  sign-in-with-apple   Apple 登录\n"
-        "  associated-domains   关联域名\n"
-        "  external-accessory   无线配件配置\n"
-        "  gamecenter           游戏中心\n"
-        "\n"
-        "需要付费开发者账号 ($99/年):\n"
-        "  vpn                  网络扩展 / VPN (Network Extension)\n"
-        "\n"
-    );
+        "Capabilities (--entitlement, comma-separated):\n"
+        "  app-groups, healthkit, push, sign-in-with-apple, associated-domains,\n"
+        "  external-accessory, gamecenter, vpn\n"
+        "  Availability depends on the selected team's membership and Apple policy.\n"
+        "\n");
 }
 
-static void printUsage(void) {
+static void printCommandHelp(NSString *command) {
+    BOOL showList = !command || [command isEqualToString:@"list"];
+    BOOL showSign = !command || [command isEqualToString:@"sign"];
+    fprintf(stderr, "AltSign CLI - sign iOS IPA and .app bundles on macOS\n\n");
+    if (showList) {
+        fprintf(stderr,
+            "List teams and inspect a team's certificates and App IDs:\n"
+            "  altsign-cli list [--apple-id <email>] [--team-id <id>] [--verbose]\n"
+            "\n"
+            "  --apple-id <email>  Log in, or reuse this account's valid cached session.\n"
+            "                     Omit to use the single cached account.\n"
+            "  --team-id <id>      Inspect this team's certificates and App IDs.\n"
+            "                     Omit to show all teams; also inspect resources if\n"
+            "                     exactly one team exists.\n"
+            "\n"
+            "Examples:\n"
+            "  altsign-cli list --apple-id 'you@example.com'\n"
+            "  altsign-cli list\n"
+            "  altsign-cli list --team-id ABCDE12345\n\n");
+    }
+    if (showSign) {
+        fprintf(stderr,
+            "Sign with the cached account (authenticate with list first):\n"
+            "  altsign-cli sign --udid <id> (--ipa <path> | --app <path>)\n"
+            "                   [--team-id <id>] [--output <path.ipa>]\n"
+            "                   [--entitlement <names>] [--verbose]\n"
+            "\n"
+            "  --udid <id>         Target device UDID.\n"
+            "  --ipa <path>        Input IPA (.app also accepted for compatibility).\n"
+            "  --app <path>        Input .app bundle; mutually exclusive with --ipa.\n"
+            "  --team-id <id>      Required when the account has multiple teams.\n"
+            "                     With one team, omission selects it automatically.\n"
+            "  --output <path>     Signed IPA; default: <input>_signed.ipa.\n"
+            "  --entitlement <names>  Enable comma-separated capabilities.\n"
+            "\n"
+            "The selected team is shown before certificate/device changes.\n"
+            "Signing can create or revoke certificates and register devices/App IDs.\n"
+            "Team selection is per invocation, never saved or inferred from membership.\n"
+            "\n"
+            "Examples:\n"
+            "  altsign-cli sign --team-id ABCDE12345 --udid DEVICE_ID --ipa MyApp.ipa\n"
+            "  altsign-cli sign --udid DEVICE_ID --app MyApp.app --output Signed.ipa\n"
+            "  altsign-cli sign --udid DEVICE_ID --ipa MyApp.ipa --entitlement healthkit\n\n");
+        printCapabilities();
+    }
     fprintf(stderr,
-        "AltSign CLI — macOS IPA/.app 自签名工具\n"
+        "Common options:\n"
+        "  --verbose          Print full API responses to the terminal (sensitive).\n"
+        "  -h, --help         Show help without authentication or state changes.\n"
+        "  altsign-cli help [list|sign]\n"
         "\n"
-        "用法:\n"
-        "  altsign-cli list   --apple-id <email>\n"
-        "  altsign-cli sign   --udid <udid> --ipa <file.ipa|file.app> [--output <file.ipa>] [--entitlement <list>]\n"
-        "  altsign-cli sign   --udid <udid> --app <file.app> [--output <file.ipa>] [--entitlement <list>]\n"
+        "Authentication and state:\n"
+        "  Passwords and 2FA codes are read from stdin; terminal passwords are hidden.\n"
+        "  --password is not supported; sign does not accept --apple-id.\n"
+        "  A successful login replaces the single cached account.\n"
+        "  Session and keys: ~/Library/Application Support/altsign/.\n"
         "\n"
-        "命令:\n"
-        "  list   独立登录并列出开发证书与 App ID\n"
-        "  sign   使用单一缓存 session 签名 IPA/.app\n"
+        "Diagnostics:\n"
+        "  Validated commands print a private, shareable JSON log path at startup\n"
+        "  and completion: $TMPDIR/altsign-XXXXXX.log (macOS temp dir fallback).\n"
+        "  Logs contain stages and numeric status, not credentials or raw responses.\n"
+        "  Terminal output and session files are separate; do not share them unredacted.\n"
+        "  HTTP 429 preserves its error code; no automatic retries are performed.\n"
         "\n"
-        "认证输入:\n"
-        "  list --apple-id 从标准输入读取密码和 2FA；终端密码不回显\n"
-        "\n"
-        "日志: 登录/签名命令结束时输出脱敏诊断日志路径及退出码\n"
-        "\n"
-        "选项:\n"
-        "  --apple-id      list 要认证的 Apple ID 邮箱\n"
-        "  --udid          iOS 设备 UDID\n"
-        "  --ipa           待签名的 IPA 或 .app 路径\n"
-        "  --app           待签名的 .app 路径\n"
-        "  --output        输出签名后的 IPA 路径 (默认在原文件名加 _signed)\n"
-        "  --entitlement   启用的 capabilities，逗号分隔 (如 healthkit,app-groups)\n"
-        "  --verbose       打印完整日志（默认截断大响应）\n"
-        "\n"
-    );
-    printCapabilities();
+        "Exit codes: 0 success/help; 1 operation or missing sign input failure;\n"
+        "            2 missing/expired session or password input failure;\n"
+        "            64 unknown command or invalid option.\n"
+        "  Apple/HTTP error codes appear separately from process exit codes.\n");
 }
+
+static void printUsage(void) { printCommandHelp(nil); }
 
 static NSString * _Nullable getArg(NSArray *args, NSString *flag) {
     NSUInteger idx = NSNotFound;
@@ -137,9 +170,9 @@ static BOOL validateCommandOptions(NSArray<NSString *> *args,
                                    NSString *command,
                                    NSString **errorMessage) {
     NSSet<NSString *> *valueOptions = [command isEqualToString:@"list"]
-        ? [NSSet setWithArray:@[@"--apple-id"]]
+        ? [NSSet setWithArray:@[@"--apple-id", @"--team-id"]]
         : [NSSet setWithArray:@[
-            @"--udid", @"--ipa", @"--app", @"--output", @"--entitlement"
+            @"--udid", @"--ipa", @"--app", @"--output", @"--entitlement", @"--team-id"
         ]];
     NSSet<NSString *> *flagOptions = [NSSet setWithArray:@[@"--verbose"]];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
@@ -163,7 +196,8 @@ static BOOL validateCommandOptions(NSArray<NSString *> *args,
         [seen addObject:argument];
         if (takesValue) {
             if (index + 1 >= args.count ||
-                [args[index + 1] hasPrefix:@"--"]) {
+                [args[index + 1] hasPrefix:@"--"] ||
+                [args[index + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length == 0) {
                 if (errorMessage != NULL) {
                     *errorMessage = [NSString stringWithFormat:
                         @"%@ requires a value", argument];
@@ -366,9 +400,39 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
 // 核心流程
 // ============================================================
 
+static void printTeams(NSArray<ALTTeam *> *teams) {
+    fprintf(stdout, "Teams (%lu):\n", (unsigned long)teams.count);
+    for (ALTTeam *team in teams) {
+        fprintf(stdout, "  %s  %s  [%s]\n", team.identifier.UTF8String,
+                team.name.UTF8String, team.type.UTF8String);
+    }
+    fflush(stdout);
+}
+
+static ALTTeam *selectTeam(NSArray<ALTTeam *> *teams, NSString *teamID) {
+    if (teamID) {
+        for (ALTTeam *team in teams) {
+            if ([team.identifier isEqualToString:teamID]) {
+                ALTDiagnosticsEvent(@"team.explicit", 0);
+                return team;
+            }
+        }
+        fprintf(stderr, "Error: team '%s' is not available to this account.\n", teamID.UTF8String);
+        ALTDiagnosticsEvent(@"team.not_found", 1);
+    } else if (teams.count == 1) {
+        ALTDiagnosticsEvent(@"team.automatic", 0);
+        return teams.firstObject;
+    } else {
+        fprintf(stderr, "Error: multiple teams are available; specify --team-id <id>.\n");
+        ALTDiagnosticsEvent(@"team.selection_required", 1);
+    }
+    printTeams(teams);
+    return nil;
+}
+
 static BOOL performSign(NSString *appleID, NSString *password,
                         NSString *udid, NSString *inputPath, NSString *outputPath,
-                        NSArray<NSString *> *entitlementNames)
+                        NSArray<NSString *> *entitlementNames, NSString *teamID)
 {
     BOOL inputIsApp = isAppBundlePath(inputPath);
     if (!inputIsApp && !isIPAPath(inputPath)) {
@@ -380,7 +444,7 @@ static BOOL performSign(NSString *appleID, NSString *password,
     __block BOOL succeeded = NO;
 
     NSLog(@"========================================");
-    NSLog(@" AltSign CLI — IPA/.app 自签名工具");
+    NSLog(@" AltSign CLI - IPA/.app signing tool");
     NSLog(@"========================================");
     NSLog(@" Apple ID:  %@", appleID);
     NSLog(@" UDID:      %@", udid);
@@ -409,7 +473,11 @@ static BOOL performSign(NSString *appleID, NSString *password,
                 return;
             }
 
-            ALTTeam *team = teams.firstObject;
+            ALTTeam *team = selectTeam(teams, teamID);
+            if (!team) {
+                dispatch_semaphore_signal(sem);
+                return;
+            }
             NSLog(@"[Step 2] Using team: %@ (%@) type=%@", team.name, team.identifier, team.type);
 
             // Step 3: 获取证书
@@ -464,12 +532,12 @@ static BOOL performSign(NSString *appleID, NSString *password,
                                 void (^completion)(BOOL, NSError *) = ^(BOOL success, NSError *error) {
                                     if (success) {
                                         ALTDiagnosticsEvent(@"sign.succeeded", 0);
-                                        NSLog(@"✅ [Done] IPA signed successfully!");
+                                        NSLog(@"[Done] IPA signed successfully!");
                                         NSLog(@"   Output: %@", outputPath);
                                         succeeded = YES;
                                     } else {
                                         ALTDiagnosticsEvent(@"sign.failed", error.code);
-                                        NSLog(@"❌ [Error] Signing failed: %@", error);
+                                        NSLog(@"[Error] Signing failed: %@", error);
                                     }
                                     dispatch_semaphore_signal(sem);
                                 };
@@ -620,7 +688,7 @@ static BOOL performSign(NSString *appleID, NSString *password,
     return succeeded;
 }
 
-static BOOL performList(NSString *appleID, NSString *password)
+static BOOL performList(NSString *appleID, NSString *password, NSString *teamID)
 {
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     __block BOOL succeeded = NO;
@@ -632,7 +700,7 @@ static BOOL performList(NSString *appleID, NSString *password)
             dispatch_semaphore_signal(sem);
             return;
         }
-        NSLog(@"✅ Login successful! DSID: %@", account.identifier);
+        NSLog(@"Login successful! DSID: %@", account.identifier);
 
         ALTAppleAPI *api = [ALTAppleAPI sharedAPI];
         [api fetchTeamsForAccount:account session:session
@@ -643,8 +711,21 @@ static BOOL performList(NSString *appleID, NSString *password)
                 dispatch_semaphore_signal(sem);
                 return;
             }
-            ALTTeam *team = teams.firstObject;
-            NSLog(@"Team: %@ (%@)", team.name, team.identifier);
+            if (!teamID) {
+                printTeams(teams);
+                if (teams.count > 1) {
+                    fprintf(stdout, "Use list --team-id <id> to inspect a team's certificates and App IDs.\n");
+                    succeeded = YES;
+                    dispatch_semaphore_signal(sem);
+                    return;
+                }
+            }
+            ALTTeam *team = selectTeam(teams, teamID);
+            if (!team) {
+                dispatch_semaphore_signal(sem);
+                return;
+            }
+            NSLog(@"Team: %@ (%@) type=%@", team.name, team.identifier, team.type);
 
             [api fetchCertificatesForTeam:team session:session
                 completionHandler:^(NSArray<ALTCertificate *> *certs, NSError *error) {
@@ -656,12 +737,12 @@ static BOOL performList(NSString *appleID, NSString *password)
                 }
                 if (certs.count > 0) {
                     NSLog(@"");
-                    NSLog(@"📜 Certificates (%lu):", (unsigned long)certs.count);
+                    NSLog(@"Certificates (%lu):", (unsigned long)certs.count);
                     for (ALTCertificate *cert in certs) {
                         NSLog(@"   %@ (%@)", cert.name, cert.identifier);
                     }
                 } else {
-                    NSLog(@"📜 No certificates found.");
+                    NSLog(@"No certificates found.");
                 }
 
                 [api fetchAppIDsForTeam:team session:session
@@ -674,12 +755,12 @@ static BOOL performList(NSString *appleID, NSString *password)
                     }
                     if (appIDs.count > 0) {
                         NSLog(@"");
-                        NSLog(@"📦 App IDs (%lu):", (unsigned long)appIDs.count);
+                        NSLog(@"App IDs (%lu):", (unsigned long)appIDs.count);
                         for (ALTAppID *appID in appIDs) {
                             NSLog(@"   %@ (%@) name=%@", appID.bundleIdentifier, appID.identifier, appID.name);
                         }
                     } else {
-                        NSLog(@"📦 No App IDs found.");
+                        NSLog(@"No App IDs found.");
                     }
                     succeeded = YES;
                     dispatch_semaphore_signal(sem);
@@ -707,10 +788,19 @@ static int RunCLI(int argc, const char * argv[]) {
         }
 
         NSString *command = args[1];
-        if ([command isEqualToString:@"--help"] ||
-            [command isEqualToString:@"-h"] ||
+        if ([command isEqualToString:@"--help"] || [command isEqualToString:@"-h"] ||
             [command isEqualToString:@"help"]) {
-            printUsage();
+            if (args.count == 2) { printUsage(); return 0; }
+            if ([command isEqualToString:@"help"] && args.count == 3 &&
+                ([args[2] isEqualToString:@"list"] || [args[2] isEqualToString:@"sign"])) {
+                printCommandHelp(args[2]); return 0;
+            }
+            fprintf(stderr, "Error: use altsign-cli help [list|sign].\n");
+            return 64;
+        }
+        if (([command isEqualToString:@"list"] || [command isEqualToString:@"sign"]) &&
+            (hasFlag(args, @"--help") || hasFlag(args, @"-h"))) {
+            printCommandHelp(command);
             return 0;
         }
         if (hasFlag(args, @"--password")) {
@@ -740,6 +830,7 @@ static int RunCLI(int argc, const char * argv[]) {
         }
 
         NSString *appleID = getArg(args, @"--apple-id");
+        NSString *teamID = getArg(args, @"--team-id");
         NSString *udid = getArg(args, @"--udid");
         NSString *ipaPath = getArg(args, @"--ipa");
         NSString *appPath = getArg(args, @"--app");
@@ -824,11 +915,12 @@ static int RunCLI(int argc, const char * argv[]) {
                 udid,
                 inputPath,
                 outputPath,
-                entitlementNames
+                entitlementNames,
+                teamID
             ) ? 0 : 1;
 
         } else if ([command isEqualToString:@"list"]) {
-            return performList(appleID, password) ? 0 : 1;
+            return performList(appleID, password, teamID) ? 0 : 1;
         }
 
         return 64;

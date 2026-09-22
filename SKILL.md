@@ -30,6 +30,17 @@ Never put either secret in arguments, environment variables, scripts, or logs.
 Later signing commands use the single cached session without credential
 arguments; logging in with another Apple ID replaces that session.
 
+## Choose a Team
+
+Run `./altsign-cli list` to list every team using the cached account. Use
+`./altsign-cli list --team-id TEAM_ID` to inspect a specific team's certificates
+and App IDs. A single team is selected automatically; signing with multiple
+teams requires `--team-id TEAM_ID`. Pass it on every signing command: selection
+is not saved by `list`, and an unknown ID fails rather than choosing another team.
+
+Use `./altsign-cli list --help` or `./altsign-cli sign --help` for command-specific
+English help, examples, state locations and exit codes.
+
 ## Sign An IPA
 
 ```bash
@@ -66,7 +77,14 @@ Before reinstalling the same bundle, terminate the app and avoid leaving an old 
   `./altsign-cli list --apple-id '<Apple ID>'` as a separate login step.
 - Password or 2FA prompt: let the user enter it through standard input; do
   not ask them to paste it into chat, and do not guess or store it.
-- HTTP 4xx from Apple: usually account, certificate, App ID, device registration, or capability eligibility.
+- Multiple teams or unknown team ID: run `list`, choose the intended ID, and
+  pass `--team-id` to `sign` before allowing certificate/device changes.
+- On failure, the CLI prints a `Diagnostics (exit code ...): ...log` path.
+  Share that structured log for support; terminal/verbose output and session
+  files may contain sensitive information.
+- HTTP 429: respect any Retry-After information in the log; do not repeatedly
+  retry or switch accounts. Other 4xx or Apple business errors require checking
+  the failed stage and code; HTTP 200 alone does not mean authentication succeeded.
 - HTTP 5xx or anisette errors: check network/VPN and retry only after identifying the cause.
 - Free Apple ID profiles expire after 7 days; re-sign and reinstall to refresh.
 - Some capabilities require paid Apple Developer Program membership.

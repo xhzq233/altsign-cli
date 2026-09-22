@@ -8,6 +8,7 @@
 //    Services API: servicesBaseURL (v1/) + JSON body + 同样的认证头
 //
 
+#import "diagnostics.h"
 #import "apple_api.h"
 #import "certificate_request.h"
 #import "srp_auth.h"
@@ -204,6 +205,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
 
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            ALTDiagnosticsHTTP(requestURL.lastPathComponent, response, error);
             if (error) {
                 completionHandler(nil, error);
                 return;
@@ -226,6 +228,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
 
             // 检查 resultCode
             NSInteger resultCode = [responseDict[@"resultCode"] integerValue];
+            ALTDiagnosticsEvent(@"api.result", resultCode);
             if (resultCode != 0) {
                 NSString *msg = responseDict[@"userString"] ?: responseDict[@"resultString"] ?: @"Unknown error";
                 NSString *desc = [NSString stringWithFormat:@"%@ (resultCode=%ld)", msg, (long)resultCode];
@@ -297,6 +300,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
 
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            ALTDiagnosticsHTTP(@"api.services", response, error);
             if (error) {
                 completionHandler(nil, error);
                 return;
@@ -369,6 +373,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
                 [teams addObject:team];
             }
 
+            ALTDiagnosticsEvent(@"api.teams.count", teams.count);
             NSLog(@"[API] Found %lu teams", (unsigned long)teams.count);
             completion(teams, nil);
         }];
@@ -406,6 +411,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
                     [certs addObject:cert];
                 }
 
+                ALTDiagnosticsEvent(@"api.certs.count", certs.count);
                 NSLog(@"[API] Found %lu certificates", (unsigned long)certs.count);
                 completion(certs, nil);
             }];
@@ -529,6 +535,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
                 appID.name = dict[@"name"] ?: @"";
                 [appIDs addObject:appID];
             }
+            ALTDiagnosticsEvent(@"api.appIDs.count", appIDs.count);
             NSLog(@"[API] Found %lu App IDs", (unsigned long)appIDs.count);
             completion(appIDs, nil);
         }];

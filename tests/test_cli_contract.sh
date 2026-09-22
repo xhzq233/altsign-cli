@@ -16,7 +16,7 @@ cleanup() {
 trap cleanup EXIT
 
 run_with_home() {
-  CFFIXED_USER_HOME="$TEST_HOME" HOME="$TEST_HOME" "$BIN" "$@"
+  TMPDIR="$TEST_HOME" CFFIXED_USER_HOME="$TEST_HOME" HOME="$TEST_HOME" "$BIN" "$@"
 }
 
 if run_with_home current-account >"$TEST_HOME/current.out" 2>"$TEST_HOME/current.err"; then

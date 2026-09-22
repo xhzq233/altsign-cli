@@ -53,6 +53,7 @@ clang++ -std=c++17 -ObjC++ -fobjc-arc \
     -lssl -lcrypto -lcorecrypto \
     -o "${OUTPUT}" \
     main.mm \
+    diagnostics.mm \
     anisette.mm \
     srp_auth.mm \
     apple_api.mm \

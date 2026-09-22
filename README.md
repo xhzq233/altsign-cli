@@ -130,6 +130,32 @@ Enter the 6-digit code from your trusted device. Done.
 
 Capabilities marked **No** require a paid Apple Developer Program membership ($99/year).
 
+## Troubleshooting logs
+
+After argument validation, each `list` or `sign` invocation creates a private
+`altsign-XXXXXX.log` in `$TMPDIR` (falling back to
+`NSTemporaryDirectory()`, usually under `/var/folders/.../T/`). The CLI prints its path at startup and
+again with the process exit code at completion, including failures. If the
+file cannot be created, a warning is printed and the command continues.
+
+The file contains JSON lines with timestamps, OS/client markers, authentication
+and query stages, HTTP status, numeric error codes, query counts, and parsed
+`Retry-After` values. It does not copy terminal output, accounts, passwords,
+verification codes, tokens, device/team identifiers, request/response bodies,
+or arbitrary headers. This file can be shared for support; existing terminal
+output (especially `--verbose`) and session files are separate and may contain
+sensitive data. Logs have owner-only permissions, are kept after exit, and can
+be deleted after diagnosis; macOS may eventually remove temporary files.
+
+For HTTP 429, the CLI preserves error code 429 and logs any server-provided
+retry delay/date. It does not automatically retry. A successful login followed
+by an empty team query is a separate issue from authentication failure.
+
+Developers can run `bash tests/test_cli_contract.sh ./altsign-cli` and
+`bash tests/test_diagnostics.sh`. The latter uses local simulated responses
+for HTTP 429, Apple plist errors, success and network failure; it never contacts
+Apple and also checks log serialization and permissions.
+
 ## Limitations
 
 - **macOS only** — relies on Apple private frameworks for authentication

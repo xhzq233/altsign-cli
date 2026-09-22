@@ -6,6 +6,7 @@
 //  参照 AltStore AnisetteDataManager 实现
 //
 
+#import "diagnostics.h"
 #import "anisette.h"
 #import <dlfcn.h>
 #import <objc/runtime.h>
@@ -130,6 +131,7 @@ static NSString *Base64LocalUserID(NSString *udid) {
         NSString *buildVersion = @"22F66"; // fallback
         NSString *deviceDescription = DeviceDescription(deviceModel, osVersion, buildVersion);
 
+        ALTDiagnosticsEvent(@"anisette.aoskit", 0);
         NSLog(@"[Anisette] AOSKit OK machineID=%lu otp=%lu", (unsigned long)machineID.length, (unsigned long)oneTimePassword.length);
 
         return [[ALTAnisetteData alloc]
@@ -152,6 +154,7 @@ static NSString *Base64LocalUserID(NSString *udid) {
     }
 
     // Fallback：AuthKit AKAppleIDSession
+    ALTDiagnosticsEvent(@"anisette.fallback", 0);
     NSLog(@"[Anisette] Falling back to AuthKit...");
 
     static Class AKAppleIDSessionClass = nil;
@@ -191,6 +194,7 @@ static NSString *Base64LocalUserID(NSString *udid) {
         NSString *rinfoStr = headers[@"X-Apple-I-MD-RINFO"];
         NSUInteger routingInfo = (NSUInteger)[rinfoStr longLongValue];
 
+        ALTDiagnosticsEvent(@"anisette.authkit", 0);
         NSLog(@"[Anisette] AuthKit fallback machineID=%lu otp=%lu", (unsigned long)machineID.length, (unsigned long)otp.length);
 
         ALTAnisetteData *fallbackData = [[ALTAnisetteData alloc]

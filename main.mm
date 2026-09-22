@@ -10,6 +10,7 @@
 //
 //  首次认证的密码与 2FA 都从标准输入读取。
 
+#import "diagnostics.h"
 #import <Foundation/Foundation.h>
 #import "anisette.h"
 #import "srp_auth.h"
@@ -99,6 +100,8 @@ static void printUsage(void) {
         "\n"
         "认证输入:\n"
         "  list --apple-id 从标准输入读取密码和 2FA；终端密码不回显\n"
+        "\n"
+        "日志: 登录/签名命令结束时输出脱敏诊断日志路径及退出码\n"
         "\n"
         "选项:\n"
         "  --apple-id      list 要认证的 Apple ID 邮箱\n"
@@ -334,6 +337,7 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
             [ALTAppleAPISession loadSession:&cachedAppleID];
         if ([cachedAppleID isEqualToString:appleID] &&
             cachedSession && !cachedSession.isExpired) {
+            ALTDiagnosticsEvent(@"auth.cache_reused", 0);
             NSLog(@"[Auth] Reusing cached session (expires: %@)", cachedSession.expirationDate);
             cachedSession.anisetteData = anisetteData;
             ALTAccount *account = [[ALTAccount alloc] init];
@@ -343,6 +347,7 @@ static void authenticateWithAppleID(NSString *appleID, NSString *password,
             return;
         }
 
+        ALTDiagnosticsEvent(@"auth.fresh_login", 0);
         NSLog(@"[Auth] Cached session missing or expired, performing SRP login...");
 
         ALTVerificationHandler verificationHandler = ^(void (^callback)(NSString * _Nullable code)) {
@@ -385,6 +390,7 @@ static BOOL performSign(NSString *appleID, NSString *password,
 
     authenticateWithAppleID(appleID, password, ^(ALTAccount *account, ALTAppleAPISession *session, NSError *error) {
         if (error || !session) {
+            ALTDiagnosticsEvent(@"auth.failed", error.code);
             NSLog(@"[Error] Authentication failed: %@", error);
             dispatch_semaphore_signal(sem);
             return;
@@ -397,6 +403,7 @@ static BOOL performSign(NSString *appleID, NSString *password,
         NSLog(@"[Step 2] Fetching teams...");
         [api fetchTeamsForAccount:account session:session completionHandler:^(NSArray<ALTTeam *> *teams, NSError *error) {
             if (error || teams.count == 0) {
+                ALTDiagnosticsEvent(@"teams.failed_or_empty", error.code);
                 NSLog(@"[Error] No teams found: %@", error);
                 dispatch_semaphore_signal(sem);
                 return;
@@ -409,6 +416,7 @@ static BOOL performSign(NSString *appleID, NSString *password,
             NSLog(@"[Step 3] Fetching certificates...");
             [api fetchCertificatesForTeam:team session:session completionHandler:^(NSArray<ALTCertificate *> *certs, NSError *error) {
                 if (error) {
+                    ALTDiagnosticsEvent(@"certificates.failed", error.code);
                     NSLog(@"[Error] Failed to fetch certificates: %@", error);
                     dispatch_semaphore_signal(sem);
                     return;
@@ -455,10 +463,12 @@ static BOOL performSign(NSString *appleID, NSString *password,
                                 ALTSigner *signer = [[ALTSigner alloc] initWithCertificate:cert];
                                 void (^completion)(BOOL, NSError *) = ^(BOOL success, NSError *error) {
                                     if (success) {
+                                        ALTDiagnosticsEvent(@"sign.succeeded", 0);
                                         NSLog(@"✅ [Done] IPA signed successfully!");
                                         NSLog(@"   Output: %@", outputPath);
                                         succeeded = YES;
                                     } else {
+                                        ALTDiagnosticsEvent(@"sign.failed", error.code);
                                         NSLog(@"❌ [Error] Signing failed: %@", error);
                                     }
                                     dispatch_semaphore_signal(sem);
@@ -617,6 +627,7 @@ static BOOL performList(NSString *appleID, NSString *password)
 
     authenticateWithAppleID(appleID, password, ^(ALTAccount *account, ALTAppleAPISession *session, NSError *error) {
         if (error || !session) {
+            ALTDiagnosticsEvent(@"auth.failed", error.code);
             NSLog(@"[Error] Authentication failed: %@", error);
             dispatch_semaphore_signal(sem);
             return;
@@ -627,6 +638,7 @@ static BOOL performList(NSString *appleID, NSString *password)
         [api fetchTeamsForAccount:account session:session
                 completionHandler:^(NSArray<ALTTeam *> *teams, NSError *error) {
             if (error || teams.count == 0) {
+                ALTDiagnosticsEvent(@"teams.failed_or_empty", error.code);
                 NSLog(@"[Error] No teams found: %@", error);
                 dispatch_semaphore_signal(sem);
                 return;
@@ -637,6 +649,7 @@ static BOOL performList(NSString *appleID, NSString *password)
             [api fetchCertificatesForTeam:team session:session
                 completionHandler:^(NSArray<ALTCertificate *> *certs, NSError *error) {
                 if (error) {
+                    ALTDiagnosticsEvent(@"certificates.failed", error.code);
                     NSLog(@"[Error] Failed to fetch certificates: %@", error);
                     dispatch_semaphore_signal(sem);
                     return;
@@ -654,6 +667,7 @@ static BOOL performList(NSString *appleID, NSString *password)
                 [api fetchAppIDsForTeam:team session:session
                     completionHandler:^(NSArray<ALTAppID *> *appIDs, NSError *error) {
                     if (error) {
+                        ALTDiagnosticsEvent(@"app_ids.failed", error.code);
                         NSLog(@"[Error] Failed to fetch App IDs: %@", error);
                         dispatch_semaphore_signal(sem);
                         return;
@@ -682,7 +696,7 @@ static BOOL performList(NSString *appleID, NSString *password)
 // main
 // ============================================================
 
-int main(int argc, const char * argv[]) {
+static int RunCLI(int argc, const char * argv[]) {
     @autoreleasepool {
         umask(0077);
         NSArray *args = [[NSProcessInfo processInfo] arguments];
@@ -732,6 +746,7 @@ int main(int argc, const char * argv[]) {
         NSString *outputPath = getArg(args, @"--output");
         NSString *entitlementArg = getArg(args, @"--entitlement");
         ALTVerboseLogging = hasFlag(args, @"--verbose");
+        ALTDiagnosticsStart(command);
 
         if (hasFlag(args, @"--apple-id") && appleID.length == 0) {
             fprintf(stderr, "Error: --apple-id requires a value.\n");
@@ -750,6 +765,7 @@ int main(int argc, const char * argv[]) {
                     &passwordError
                 );
                 if (password.length == 0) {
+                    ALTDiagnosticsEvent(@"auth.input_failed", passwordError.code);
                     fprintf(stderr, "Error: %s\n",
                         (passwordError.localizedDescription ?:
                             @"password was not provided").UTF8String);
@@ -761,6 +777,7 @@ int main(int argc, const char * argv[]) {
             ALTAppleAPISession *cached =
                 [ALTAppleAPISession loadSession:&cachedAppleID];
             if (cached == nil || cached.isExpired || cachedAppleID.length == 0) {
+                ALTDiagnosticsEvent(@"auth.cache_missing_or_expired", 2);
                 fprintf(stderr,
                     "Error: no valid cached session. Run `altsign-cli list --apple-id '<Apple ID>'` first.\n");
                 return 2;
@@ -815,5 +832,13 @@ int main(int argc, const char * argv[]) {
         }
 
         return 64;
+    }
+}
+
+int main(int argc, const char *argv[]) {
+    @autoreleasepool {
+        int code = RunCLI(argc, argv);
+        ALTDiagnosticsFinish(code);
+        return code;
     }
 }

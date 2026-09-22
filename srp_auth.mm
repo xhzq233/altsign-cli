@@ -1,3 +1,4 @@
+#import "diagnostics.h"
 #import "srp_auth.h"
 #import <CommonCrypto/CommonCrypto.h>
 
@@ -18,7 +19,7 @@ static NSString *const kGSAEndpoint = @"https://gsa.apple.com/grandslam/GsServic
 static NSString *const kGSA2FARequest = @"https://gsa.apple.com/auth/verify/trusteddevice";
 static NSString *const kGSA2FAValidate = @"https://gsa.apple.com/grandslam/GsService2/validate";
 
-static NSString *const kGSAUserAgent = @"akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0";
+static NSString *const kGSAUserAgent = @"AuthKit/1 (Macintosh; OS X 26.5.2) (com.apple.dt.Xcode/26.0)";
 static NSString *const kGSA2FAUserAgent = @"Xcode";
 static NSString *const kGSAXcodeVersion = @"26.0 (17A324)";
 
@@ -255,6 +256,7 @@ static void SendGSARequest(NSDictionary *requestDict,
 
     [request setValue:@"text/x-xml-plist" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
+    [request setValue:kGSAUserAgent forHTTPHeaderField:@"User-Agent"];
     [request setValue:anisetteData.deviceDescription forHTTPHeaderField:@"X-MMe-Client-Info"];
 
     if (extraHeaders) {
@@ -266,6 +268,7 @@ static void SendGSARequest(NSDictionary *requestDict,
     NSURLSessionDataTask *task = [ALTSharedSession()
         dataTaskWithRequest:request
           completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        ALTDiagnosticsHTTP([@"gsa." stringByAppendingString:requestDict[@"o"]], response, error);
         if (error) {
             completion(nil, error);
             return;
@@ -289,7 +292,7 @@ static void SendGSARequest(NSDictionary *requestDict,
             }
         }
 
-        if (httpStatus >= 500) {
+        if (httpStatus == 429 || httpStatus >= 500) {
             completion(nil, SRPError((NSInteger)httpStatus, [NSString stringWithFormat:@"HTTP %ld from Apple", (long)httpStatus]));
             return;
         }
@@ -297,7 +300,7 @@ static void SendGSARequest(NSDictionary *requestDict,
         NSError *parseError = nil;
         NSDictionary *responseDict = PlistDeserialize(data, &parseError);
         if (!responseDict) {
-            completion(nil, SRPError(kAltSignErrorCodeGeneric, @"Invalid plist response"));
+            completion(nil, SRPError(httpStatus >= 400 ? httpStatus : kAltSignErrorCodeGeneric, @"Invalid plist response"));
             return;
         }
 
@@ -310,6 +313,7 @@ static void SendGSARequest(NSDictionary *requestDict,
         NSDictionary *status = dictionary[@"Status"];
         NSInteger hsc = [status[@"hsc"] integerValue];
         NSInteger errorCode = [status[@"ec"] integerValue];
+        ALTDiagnosticsEvent(@"gsa.result", errorCode);
         if (errorCode != 0 || hsc >= 500) {
             NSString *errorDescription = status[@"em"] ?: [NSString stringWithFormat:@"GSA error (hsc=%ld, ec=%ld)", (long)hsc, (long)errorCode];
             NSLog(@"[SRP] GSA status: %@", status);
@@ -779,6 +783,7 @@ static NSString *SessionStorePath(void) {
                                     return;
                                 }
 
+                                ALTDiagnosticsEvent(@"auth.session_saved", 0);
                                 NSLog(@"[SRP] Authentication successful, session saved (expires: %@)", expirationDate);
                                 completion(account, session, nil);
                             }];
@@ -823,6 +828,7 @@ static NSString *SessionStorePath(void) {
                     return;
                 }
 
+                ALTDiagnosticsEvent(@"auth.session_saved", 0);
                 NSLog(@"[SRP] Authentication successful, session saved (expires: %@)", expirationDate);
                 completion(account, session, nil);
             }];
@@ -868,6 +874,7 @@ static NSString *SessionStorePath(void) {
     NSURLSessionDataTask *task = [ALTSharedSession()
         dataTaskWithRequest:request
           completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        ALTDiagnosticsHTTP(@"2fa.request", response, error);
         if (error) {
             NSLog(@"[2FA] Request failed: %@", error);
             completion(error);
@@ -1003,6 +1010,7 @@ static NSString *SessionStorePath(void) {
     NSURLSessionDataTask *validateTask = [ALTSharedSession()
         dataTaskWithRequest:validateRequest
           completionHandler:^(NSData *validateData, NSURLResponse *validateResponse, NSError *validateError) {
+        ALTDiagnosticsHTTP(@"2fa.validate", validateResponse, validateError);
         if (validateError) {
             NSLog(@"[2FA] Validate network error: %@", validateError);
             completion(NO, validateError);

@@ -18,7 +18,7 @@ SDK_PATH="$(xcrun --show-sdk-path)"
 CORECRYPTO_DIR="Dependencies/corecrypto"
 
 if [ ! -d "${CORECRYPTO_DIR}" ]; then
-    echo "❌ Missing ${CORECRYPTO_DIR}. Please ensure corecrypto headers are available."
+    echo "Missing ${CORECRYPTO_DIR}. Please ensure corecrypto headers are available."
     exit 1
 fi
 
@@ -53,6 +53,7 @@ clang++ -std=c++17 -ObjC++ -fobjc-arc \
     -lssl -lcrypto -lcorecrypto \
     -o "${OUTPUT}" \
     main.mm \
+    diagnostics.mm \
     anisette.mm \
     srp_auth.mm \
     apple_api.mm \
@@ -61,7 +62,7 @@ clang++ -std=c++17 -ObjC++ -fobjc-arc \
     "${TMP_DIR}/ccsrp.o"
 
 echo "============================================"
-echo " ✅ Build successful: ./${OUTPUT}"
+echo " Build successful: ./${OUTPUT}"
 echo "============================================"
 echo ""
 echo "Usage:"

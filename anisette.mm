@@ -32,7 +32,7 @@ static NSString *OSBuildVersion(void) {
 
 static NSString *DeviceDescription(NSString *deviceModel, NSString *osVersion, NSString *buildVersion) {
     NSString *osName = @"macOS";
-    return [NSString stringWithFormat:@"<%@> <%@;%@;%@> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>",
+    return [NSString stringWithFormat:@"<%@> <%@;%@;%@> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
             deviceModel, osName, osVersion, buildVersion];
 }
 

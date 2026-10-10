@@ -485,7 +485,7 @@ static NSString *const kServicesBaseURL = @"https://developerservices2.apple.com
                   [NSURL URLWithString:kBaseURL]];
 
     [self sendRequestWithURL:URL
-         additionalParameters:@{@"deviceNumber": udid, @"name": name}
+         additionalParameters:@{@"deviceNumber": udid, @"name": name, @"DTDK_Platform": @"ios"}
                       session:session team:team
             completionHandler:^(NSDictionary *response, NSError *error) {
                 if (error) {

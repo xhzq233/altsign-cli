@@ -22,6 +22,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong, readonly) NSDate *date;
 @property (nonatomic, copy, readonly) NSString *locale;
 @property (nonatomic, copy, readonly) NSString *timeZone;
+// Remote providers must supply the User-Agent matching their client info.
+@property (nonatomic, copy, nullable) NSString *userAgent;
+@property (nonatomic, readonly) BOOL isValid;
 
 - (instancetype)initWithMachineID:(NSString *)machineID
                   oneTimePassword:(NSString *)oneTimePassword
@@ -36,6 +39,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// 从 macOS 系统获取当前 Anisette 数据
 + (void)fetchAnisetteDataWithCompletion:(void (^)(ALTAnisetteData * _Nullable data, NSError * _Nullable error))completion;
+
+// Refresh a remote OTP without changing the identity used by an in-flight login.
+- (void)refreshWithCompletion:(void (^)(NSError * _Nullable error))completion;
+- (void)resynchronize:(NSString *)sim completion:(void (^)(NSError * _Nullable error))completion;
 
 /// 将 Anisette 数据转为 HTTP Header 字典
 - (NSDictionary<NSString *, NSString *> *)httpHeaders;

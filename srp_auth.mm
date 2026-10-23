@@ -15,6 +15,8 @@ extern "C" {
 #include <corecrypto/ccrng.h>
 }
 
+NS_ASSUME_NONNULL_BEGIN
+
 static NSString *const kGSAEndpoint = @"https://gsa.apple.com/grandslam/GsService2";
 static NSString *const kGSA2FARequest = @"https://gsa.apple.com/auth/verify/trusteddevice";
 static NSString *const kGSA2FAValidate = @"https://gsa.apple.com/grandslam/GsService2/validate";
@@ -234,14 +236,26 @@ static NSError *SRPError(NSInteger code, NSString *description) {
                            userInfo:@{NSLocalizedDescriptionKey: description ?: @"SRP error"}];
 }
 
-static void SendGSARequest(NSDictionary *requestDict,
+static void SendPreparedGSARequest(NSDictionary *requestDict,
                            ALTAnisetteData *anisetteData,
                            NSDictionary * _Nullable extraHeaders,
+                           BOOL allowResync,
                            void (^completion)(NSDictionary * _Nullable response, NSError * _Nullable error))
 {
+    // A refreshed OTP must agree in both the HTTP headers and the plist cpd.
+    NSMutableDictionary *parameters = [requestDict mutableCopy];
+    NSMutableDictionary *cpd = [parameters[@"cpd"] mutableCopy];
+    if (cpd) {
+        NSDictionary *headers = anisetteData.httpHeaders;
+        for (NSString *key in headers) {
+            if (cpd[key] != nil) cpd[key] = headers[key];
+        }
+        cpd[@"X-Apple-I-MD-RINFO"] = @(anisetteData.routingInfo);
+        parameters[@"cpd"] = cpd;
+    }
     NSDictionary *body = @{
         @"Header": @{@"Version": @"1.0.1"},
-        @"Request": requestDict
+        @"Request": parameters
     };
 
     NSData *bodyData = PlistSerialize(body);
@@ -256,8 +270,14 @@ static void SendGSARequest(NSDictionary *requestDict,
 
     [request setValue:@"text/x-xml-plist" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
-    [request setValue:kGSAUserAgent forHTTPHeaderField:@"User-Agent"];
+    [request setValue:anisetteData.userAgent ?: kGSAUserAgent forHTTPHeaderField:@"User-Agent"];
     [request setValue:anisetteData.deviceDescription forHTTPHeaderField:@"X-MMe-Client-Info"];
+    [request setValue:kGSAXcodeVersion forHTTPHeaderField:@"X-Xcode-Version"];
+    [request setValue:@"com.apple.gs.xcode.auth" forHTTPHeaderField:@"X-Apple-App-Info"];
+    NSDictionary *anisetteHeaders = anisetteData.httpHeaders;
+    for (NSString *key in anisetteHeaders) {
+        [request setValue:anisetteHeaders[key] forHTTPHeaderField:key];
+    }
 
     if (extraHeaders) {
         for (NSString *key in extraHeaders) {
@@ -314,6 +334,21 @@ static void SendGSARequest(NSDictionary *requestDict,
         NSInteger hsc = [status[@"hsc"] integerValue];
         NSInteger errorCode = [status[@"ec"] integerValue];
         ALTDiagnosticsEvent(@"gsa.result", errorCode);
+        if (hsc == 434) {
+            id sync = status[@"X-Apple-I-MD-DATA"];
+            NSString *sim = [sync isKindOfClass:NSData.class] ? [sync base64EncodedStringWithOptions:0]
+                : ([sync isKindOfClass:NSString.class] ? sync : nil);
+            if (!allowResync || ![requestDict[@"o"] isEqual:@"init"] || !anisetteData.userAgent || sim.length == 0) {
+                completion(nil, SRPError(434, @"Apple rejected anisette synchronization. Run the login command again."));
+                return;
+            }
+            ALTDiagnosticsEvent(@"gsa.resync", 434);
+            [anisetteData resynchronize:sim completion:^(NSError *error) {
+                if (error) completion(nil, error);
+                else SendPreparedGSARequest(requestDict, anisetteData, extraHeaders, NO, completion);
+            }];
+            return;
+        }
         if (errorCode != 0 || hsc >= 500) {
             NSString *errorDescription = status[@"em"] ?: [NSString stringWithFormat:@"GSA error (hsc=%ld, ec=%ld)", (long)hsc, (long)errorCode];
             NSLog(@"[SRP] GSA status: %@", status);
@@ -328,6 +363,19 @@ static void SendGSARequest(NSDictionary *requestDict,
     }];
 
     [task resume];
+}
+
+static void SendGSARequest(NSDictionary *requestDict, ALTAnisetteData *anisetteData,
+                           NSDictionary * _Nullable extraHeaders,
+                           void (^completion)(NSDictionary * _Nullable, NSError * _Nullable)) {
+    if ([requestDict[@"o"] isEqual:@"apptokens"] && anisetteData.userAgent) {
+        [anisetteData refreshWithCompletion:^(NSError *error) {
+            if (error) completion(nil, error);
+            else SendPreparedGSARequest(requestDict, anisetteData, extraHeaders, YES, completion);
+        }];
+    } else {
+        SendPreparedGSARequest(requestDict, anisetteData, extraHeaders, YES, completion);
+    }
 }
 
 static NSString *SessionStoreDirectory(void) {
@@ -380,6 +428,7 @@ static NSString *SessionStorePath(void) {
     anisette[@"date"] = self.anisetteData.date ?: [NSDate date];
     anisette[@"locale"] = self.anisetteData.locale ?: @"";
     anisette[@"timeZone"] = self.anisetteData.timeZone ?: @"";
+    if (self.anisetteData.userAgent) anisette[@"userAgent"] = self.anisetteData.userAgent;
     session[@"anisetteData"] = anisette;
 
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -433,7 +482,7 @@ static NSString *SessionStorePath(void) {
     for (NSString *key in @[
         @"machineID", @"oneTimePassword", @"localUserID",
         @"deviceUniqueIdentifier", @"deviceSerialNumber",
-        @"deviceDescription", @"locale", @"timeZone"
+        @"deviceDescription", @"locale", @"timeZone", @"userAgent"
     ]) {
         id value = ad[key];
         if (value != nil && ![value isKindOfClass:NSString.class]) {
@@ -457,6 +506,7 @@ static NSString *SessionStorePath(void) {
                      date:ad[@"date"] ?: [NSDate date]
                    locale:ad[@"locale"] ?: @""
                  timeZone:ad[@"timeZone"] ?: @""];
+    anisette.userAgent = ad[@"userAgent"];
 
     ALTAppleAPISession *session = [[ALTAppleAPISession alloc]
         initWithDSID:dict[@"dsid"] ?: @""
@@ -522,6 +572,10 @@ static NSString *SessionStorePath(void) {
               verificationHandler:(nullable ALTVerificationHandler)verificationHandler
               completionHandler:(void (^)(ALTAccount * _Nullable, ALTAppleAPISession * _Nullable, NSError * _Nullable))completion
 {
+    if (!anisetteData.isValid) {
+        completion(nil, nil, SRPError(kAltSignErrorCodeGeneric, @"Anisette data is missing MID, OTP or device identity. No login request was sent."));
+        return;
+    }
     NSLog(@"[SRP] Starting authentication for %@", appleID);
 
     NSString *clientTime = [GSAClientTimeFormatter() stringFromDate:anisetteData.date ?: [NSDate date]];
@@ -721,8 +775,11 @@ static NSString *SessionStorePath(void) {
 
             NSDictionary *statusDictionary = completeResponse[@"Status"];
             NSString *authType = statusDictionary[@"au"];
+            BOOL codeAlreadySent = authType.length == 0 && [statusDictionary[@"hsc"] integerValue] == 409;
+            if (codeAlreadySent) authType = @"trustedDeviceSecondaryAuth";
             if ([authType isEqualToString:@"trustedDeviceSecondaryAuth"] || [authType isEqualToString:@"secondaryAuth"]) {
                 [self _requestTwoFactorCodeForDSID:adsid idmsToken:idmsToken anisetteData:anisetteData
+                                  codeAlreadySent:codeAlreadySent
                                  completionHandler:^(NSError * _Nullable requestError) {
                     if (requestError) {
                         completion(nil, nil, requestError);
@@ -839,8 +896,10 @@ static NSString *SessionStorePath(void) {
 + (void)_requestTwoFactorCodeForDSID:(NSString *)dsid
                            idmsToken:(NSString *)idmsToken
                         anisetteData:(ALTAnisetteData *)anisetteData
+                     codeAlreadySent:(BOOL)codeAlreadySent
                    completionHandler:(void (^)(NSError * _Nullable error))completion
 {
+    if (codeAlreadySent) { completion(nil); return; }
     NSString *identityToken = [NSString stringWithFormat:@"%@:%@", dsid, idmsToken];
     NSData *tokenData = [identityToken dataUsingEncoding:NSUTF8StringEncoding];
     NSString *base64Token = [tokenData base64EncodedStringWithOptions:0];
@@ -848,7 +907,7 @@ static NSString *SessionStorePath(void) {
     NSDictionary<NSString *, NSString *> *headers = @{
         @"Content-Type": @"text/x-xml-plist",
         @"Accept": @"text/x-xml-plist",
-        @"User-Agent": kGSA2FAUserAgent,
+        @"User-Agent": anisetteData.userAgent ?: kGSA2FAUserAgent,
         @"Accept-Language": @"en-us",
         @"X-Apple-App-Info": @"com.apple.gs.xcode.auth",
         @"X-Xcode-Version": kGSAXcodeVersion,
@@ -976,6 +1035,18 @@ static NSString *SessionStorePath(void) {
                anisetteData:(ALTAnisetteData *)anisetteData
           completionHandler:(void (^)(BOOL success, NSError * _Nullable error))completion
 {
+    [anisetteData refreshWithCompletion:^(NSError *error) {
+        if (error) { completion(NO, error); return; }
+        [self _submitFreshTwoFactorCode:code dsid:dsid idmsToken:idmsToken anisetteData:anisetteData completionHandler:completion];
+    }];
+}
+
++ (void)_submitFreshTwoFactorCode:(NSString *)code
+                       dsid:(NSString *)dsid
+                  idmsToken:(NSString *)idmsToken
+               anisetteData:(ALTAnisetteData *)anisetteData
+          completionHandler:(void (^)(BOOL success, NSError * _Nullable error))completion
+{
     NSString *identityToken = [NSString stringWithFormat:@"%@:%@", dsid, idmsToken];
     NSData *tokenData = [identityToken dataUsingEncoding:NSUTF8StringEncoding];
     NSString *base64Token = [tokenData base64EncodedStringWithOptions:0];
@@ -983,7 +1054,7 @@ static NSString *SessionStorePath(void) {
     NSDictionary<NSString *, NSString *> *headers = @{
         @"Content-Type": @"text/x-xml-plist",
         @"Accept": @"text/x-xml-plist",
-        @"User-Agent": kGSA2FAUserAgent,
+        @"User-Agent": anisetteData.userAgent ?: kGSA2FAUserAgent,
         @"Accept-Language": @"en-us",
         @"X-Apple-App-Info": @"com.apple.gs.xcode.auth",
         @"X-Xcode-Version": kGSAXcodeVersion,
@@ -1060,3 +1131,5 @@ static NSString *SessionStorePath(void) {
 }
 
 @end
+
+NS_ASSUME_NONNULL_END

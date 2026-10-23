@@ -86,5 +86,12 @@ Before reinstalling the same bundle, terminate the app and avoid leaving an old 
   retry or switch accounts. Other 4xx or Apple business errors require checking
   the failed stage and code; HTTP 200 alone does not mean authentication succeeded.
 - HTTP 5xx or anisette errors: check network/VPN and retry only after identifying the cause.
+- On macOS 27+, Anisette uses `https://mac-ani.jkcoxson.com` by default. Ensure
+  this service and Apple are reachable. Set `ALTSIGN_ANISETTE_SERVER` to another
+  trusted HTTPS v3 provider if needed; passwords and 2FA codes go only to Apple.
+  Keep `~/Library/Application Support/altsign/anisette-v3.plist` private.
+- `MID is invalid` with `machineID=0 otp=0`: rebuild the CLI with macOS 27 v3
+  support and rerun the standalone login command. Empty Anisette headers must
+  not be worked around by repeatedly entering a password.
 - Free Apple ID profiles expire after 7 days; re-sign and reinstall to refresh.
 - Some capabilities require paid Apple Developer Program membership.

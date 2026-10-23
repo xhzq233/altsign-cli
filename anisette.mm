@@ -8,6 +8,7 @@
 
 #import "diagnostics.h"
 #import "anisette.h"
+#import "remote_anisette.h"
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -44,6 +45,50 @@ static NSString *Base64LocalUserID(NSString *udid) {
 
 @implementation ALTAnisetteData
 
+- (BOOL)isValid {
+    return self.machineID.length > 0 && self.oneTimePassword.length > 0 &&
+        self.localUserID.length > 0 && self.deviceUniqueIdentifier.length > 0 &&
+        self.deviceDescription.length > 0;
+}
+
+- (void)updateFromRemoteData:(ALTAnisetteData * _Nullable)data error:(NSError * _Nullable)error completion:(void (^)(NSError * _Nullable))completion {
+    if (error || !data.isValid) {
+        completion(error ?: [NSError errorWithDomain:@"com.altsign.anisette" code:-2
+            userInfo:@{NSLocalizedDescriptionKey: @"Remote anisette refresh returned incomplete data."}]);
+        return;
+    }
+    if (![self.deviceUniqueIdentifier isEqual:data.deviceUniqueIdentifier] ||
+        ![self.deviceDescription isEqual:data.deviceDescription] || ![self.localUserID isEqual:data.localUserID]) {
+        completion([NSError errorWithDomain:@"com.altsign.anisette" code:-2
+            userInfo:@{NSLocalizedDescriptionKey: @"Anisette identity changed during authentication. Run the login command again."}]);
+        return;
+    }
+    _machineID = [data.machineID copy];
+    _oneTimePassword = [data.oneTimePassword copy];
+    _routingInfo = data.routingInfo;
+    _date = data.date;
+    self.userAgent = data.userAgent;
+    completion(nil);
+}
+
+- (void)refreshWithCompletion:(void (^)(NSError * _Nullable))completion {
+    if (!self.userAgent) { completion(nil); return; }
+    ALTFetchRemoteAnisetteData(^(ALTAnisetteData *data, NSError *error) {
+        [self updateFromRemoteData:data error:error completion:completion];
+    });
+}
+
+- (void)resynchronize:(NSString *)sim completion:(void (^)(NSError * _Nullable))completion {
+    if (!self.userAgent || sim.length == 0) {
+        completion([NSError errorWithDomain:@"com.altsign.anisette" code:-2
+            userInfo:@{NSLocalizedDescriptionKey: @"Anisette resynchronization requires a remote identity and Apple's sync data."}]);
+        return;
+    }
+    ALTResynchronizeRemoteAnisetteData(sim, ^(ALTAnisetteData *data, NSError *error) {
+        [self updateFromRemoteData:data error:error completion:completion];
+    });
+}
+
 - (instancetype)initWithMachineID:(NSString *)machineID
                   oneTimePassword:(NSString *)oneTimePassword
                       localUserID:(NSString *)localUserID
@@ -73,6 +118,13 @@ static NSString *Base64LocalUserID(NSString *udid) {
 
 + (void)fetchAnisetteDataWithCompletion:(void (^)(ALTAnisetteData * _Nullable, NSError * _Nullable))completion
 {
+    // macOS 27 gates native anisette behind private entitlements. Use the v3
+    // provider instead of sending empty AuthKit headers to Apple's SRP service.
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ||
+        NSProcessInfo.processInfo.environment[@"ALTSIGN_ANISETTE_SERVER"] != nil) {
+        ALTFetchRemoteAnisetteData(completion);
+        return;
+    }
     // 主路径：AOSKit
     ALTAnisetteData * _Nullable (^fetchFromAOSKit)(void) = ^ALTAnisetteData * _Nullable {
         NSBundle *aosKit = [NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/AOSKit.framework"];
@@ -193,6 +245,13 @@ static NSString *Base64LocalUserID(NSString *udid) {
         NSString *localUserID = headers[@"X-Apple-I-MD-LU"] ?: @"";
         NSString *rinfoStr = headers[@"X-Apple-I-MD-RINFO"];
         NSUInteger routingInfo = (NSUInteger)[rinfoStr longLongValue];
+
+        if (machineID.length == 0 || otp.length == 0 || localUserID.length == 0) {
+            ALTDiagnosticsEvent(@"anisette.authkit.invalid", -2);
+            NSLog(@"[Anisette] AuthKit missing MID/OTP/local user ID; trying v3...");
+            ALTFetchRemoteAnisetteData(completion);
+            return;
+        }
 
         ALTDiagnosticsEvent(@"anisette.authkit", 0);
         NSLog(@"[Anisette] AuthKit fallback machineID=%lu otp=%lu", (unsigned long)machineID.length, (unsigned long)otp.length);

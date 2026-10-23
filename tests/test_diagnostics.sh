@@ -9,5 +9,5 @@ clang -ObjC -fobjc-arc -DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION \
 clang++ -std=c++17 -fobjc-arc -Wno-deprecated-declarations \
   -DCORECRYPTO_DONOT_USE_TRANSPARENT_UNION -IDependencies \
   -framework Foundation -L"$SDK_PATH/usr/lib/system" -lcorecrypto \
-  tests/test_diagnostics.mm anisette.mm diagnostics.mm "$TEST_ROOT/ccsrp.o" -o "$TEST_ROOT/test"
+  tests/test_diagnostics.mm anisette.mm remote_anisette.mm diagnostics.mm "$TEST_ROOT/ccsrp.o" -o "$TEST_ROOT/test"
 HOME="$TEST_ROOT" CFFIXED_USER_HOME="$TEST_ROOT" TMPDIR="$TEST_ROOT" "$TEST_ROOT/test"

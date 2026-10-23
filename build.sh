@@ -55,6 +55,7 @@ clang++ -std=c++17 -ObjC++ -fobjc-arc \
     main.mm \
     diagnostics.mm \
     anisette.mm \
+    remote_anisette.mm \
     srp_auth.mm \
     apple_api.mm \
     certificate_request.mm \

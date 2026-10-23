@@ -56,6 +56,27 @@ git clone <repo-url> altsign-cli && cd altsign-cli
 
 Produces a single `./altsign-cli` binary.
 
+### macOS 27 authentication
+
+macOS 27 restricts native Anisette generation. AltSign automatically uses the
+Anisette v3 service at `https://mac-ani.jkcoxson.com` on macOS 27 and later.
+The service provisions a random signing identity and generates MID/OTP headers.
+Apple ID passwords and verification codes are sent only to Apple. Authentication
+requires both Apple and the Anisette service to be reachable.
+
+To use another trusted Anisette v3 service, set `ALTSIGN_ANISETTE_SERVER` to its
+HTTPS base URL before running the CLI. Setting it explicitly also selects v3 on
+earlier macOS versions. The provider must return matching `client_info` and
+`user_agent` values at `/v3/client_info`; AltSign uses them for SRP and 2FA.
+Providers based on Android Anisette may be rejected by Apple.
+
+The independent v3 identity is saved with owner-only permissions at
+`~/Library/Application Support/altsign/anisette-v3.plist`. Keep this file private.
+AltSign reuses it across runs, re-provisions once if it expires (`-45061`), and
+resynchronizes once if Apple requests it (`hsc 434`). Empty MID/OTP values fail
+before login. If an older binary reports `MID is invalid` together with
+`machineID=0 otp=0`, rebuild and use this binary for the standalone login step.
+
 ## Usage
 
 ### Sign an IPA
@@ -195,6 +216,10 @@ checks selection, refusal before certificate operations, and help without state
 side effects. The diagnostics test uses local simulated responses
 for HTTP 429, Apple plist errors, success and network failure; it never contacts
 Apple and also checks log serialization and permissions.
+`bash tests/test_anisette.sh` checks the v3 handshake, identity persistence,
+re-provisioning and invalid responses with simulated transport. Its optional
+`--live` argument contacts the default/configured v3 provider and Apple to verify
+provisioning and identity reuse, using isolated temporary state and no Apple ID.
 
 ## Exit codes
 
@@ -212,7 +237,7 @@ Apple business error. Logs survive command exit and may be deleted after use.
 
 ## Limitations
 
-- **macOS only** — relies on Apple private frameworks for authentication
+- **macOS only** — uses native authentication frameworks or an Anisette v3 service
 - **7-day expiry** — free account profiles expire in 7 days; re-run to refresh
 - **Some capabilities are paid-only** — VPN/Network Extension, Apple Pay, etc.
 

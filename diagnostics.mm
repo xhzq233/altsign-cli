@@ -37,7 +37,7 @@ void ALTDiagnosticsStart(NSString *command) {
     }
     WriteEvent(@{@"stage": @"start", @"command": command,
                  @"os": NSProcessInfo.processInfo.operatingSystemVersionString,
-                 @"client_info": @"akd/1.0", @"gsa_ua": @"AuthKit/1-Xcode/26.0"});
+                 @"client_info": @"automatic", @"gsa_ua": @"automatic"});
     fprintf(stderr, "Diagnostic log: %s\n", diagnosticPath.fileSystemRepresentation);
 }
 
